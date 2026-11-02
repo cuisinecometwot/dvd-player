@@ -44,7 +44,7 @@ EMPTY_PAGES = {
 
 
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app: Adw.Application, device: str):
+    def __init__(self, app: Adw.Application, device: str | None):
         super().__init__(application=app, title="DVD Player", default_width=1180, default_height=720)
         self._drive = Drive(device)
         self._player = Player(self._frame_from_vlc)

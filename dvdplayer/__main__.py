@@ -1,4 +1,4 @@
-"""Entry point: python -m dvdplayer [device]"""
+"""Entry point: python -m dvdplayer [device]  (default: first /dev/sr* found)"""
 
 import sys
 
@@ -14,7 +14,7 @@ APP_ID = "dev.huuduc.DvdPlayer"
 
 
 def main() -> int:
-    device = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else "/dev/sr0"
+    device = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else None
     app = Adw.Application(application_id=APP_ID)
     # Video apps read better dark, regardless of the system theme.
     app.connect("startup", lambda _a: Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK))

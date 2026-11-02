@@ -1,6 +1,6 @@
 # DVD Player
 
-Small native GNOME app to play DVDs from the external USB drive (`/dev/sr0`) and manage the drive.
+Small native GNOME app to play DVDs from the external USB drive (auto-detected `/dev/sr*`; it can come back as `sr1` after a USB replug) and manage the drive.
 Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland).
 
 ## Product

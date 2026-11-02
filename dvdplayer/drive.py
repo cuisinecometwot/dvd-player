@@ -33,9 +33,21 @@ DVD_STRUCT_COPYRIGHT = 0x01
 _TOCENTRY = struct.Struct("BBBxiBxxx")
 
 
+def find_optical_device() -> str | None:
+    """First optical drive the kernel knows about; USB drives can come back as sr1, sr2... after a replug."""
+    names = sorted(p.name for p in Path("/sys/block").glob("sr*"))
+    return f"/dev/{names[0]}" if names else None
+
+
 class Drive:
-    def __init__(self, device: str = "/dev/sr0"):
-        self.device = device
+    def __init__(self, device: str | None = None):
+        # Without an explicit device, follow whichever optical drive is present.
+        self._auto = device is None
+        self.device = device or find_optical_device() or "/dev/sr0"
+
+    def _follow_device(self) -> None:
+        if self._auto and not os.path.exists(self.device):
+            self.device = find_optical_device() or self.device
 
     @property
     def name(self) -> str:
@@ -47,6 +59,7 @@ class Drive:
             return self.device
 
     def status(self) -> DriveStatus:
+        self._follow_device()
         try:
             # O_NONBLOCK lets us query an empty drive or open tray without waiting.
             fd = os.open(self.device, os.O_RDONLY | os.O_NONBLOCK)
