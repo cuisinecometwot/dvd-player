@@ -1,0 +1,16 @@
+[project]
+name = "dvd-player"
+version = "0.1.0"
+description = "Small GTK4 DVD player and drive manager for Linux"
+requires-python = ">=3.12"
+dependencies = ["python-vlc>=3.0"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
