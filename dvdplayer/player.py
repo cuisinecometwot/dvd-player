@@ -172,9 +172,13 @@ class Player:
         return display_aspect(width, height)
 
     def release(self) -> None:
+        # VLC's video thread calls back into Python; it must be stopped before the interpreter exits.
+        if self._mp is None:
+            return
         self._mp.stop()
         self._mp.release()
         self._instance.release()
+        self._mp = None
 
 
 def _tracks(descs) -> list[Track]:

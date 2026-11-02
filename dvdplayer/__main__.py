@@ -19,6 +19,8 @@ def main() -> int:
     # Video apps read better dark, regardless of the system theme.
     app.connect("startup", lambda _a: Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK))
     app.connect("activate", lambda a: (a.get_active_window() or MainWindow(a, device)).present())
+    # Covers exits where the window's close handler never runs (e.g. quitting with a dialog open).
+    app.connect("shutdown", lambda a: [w.shutdown() for w in a.get_windows() if isinstance(w, MainWindow)])
     return app.run([sys.argv[0]])
 
 

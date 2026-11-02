@@ -445,6 +445,10 @@ class MainWindow(Adw.ApplicationWindow):
         return True
 
     def _on_close(self, *_args) -> bool:
+        self.shutdown()
+        return False
+
+    def shutdown(self) -> None:
+        """Stop VLC; safe to call twice (window close, then app shutdown)."""
         self._loaded = False
         self._player.release()
-        return False
