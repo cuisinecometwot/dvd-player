@@ -70,6 +70,16 @@ class Player:
         self._mp.set_media(self._instance.media_new(mrl))
         self._mp.play()
 
+    def open_cd_track(self, device: str, track: int) -> None:
+        media = self._instance.media_new(f"cdda://{device}")
+        # Without a track option VLC treats the CD as a playlist, which a bare MediaPlayer won't walk.
+        media.add_option(f":cdda-track={track}")
+        self._mp.set_media(media)
+        self._mp.play()
+
+    def is_ended(self) -> bool:
+        return self._mp.get_state() == vlc.State.Ended
+
     def stop(self) -> None:
         self._mp.stop()
 

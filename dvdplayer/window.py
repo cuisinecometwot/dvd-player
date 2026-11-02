@@ -10,6 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
+from domain.cd import track_after, track_before  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
@@ -68,6 +69,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._rip_job: RipJob | None = None
         self._rip_dest: Path | None = None
         self._audio_spans: list[tuple[int, int, int]] = []
+        self._cd_mode = False
+        self._cd_track: int | None = None
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -164,8 +167,13 @@ class MainWindow(Adw.ApplicationWindow):
         click.connect("pressed", self._on_video_click)
         self._video.add_controller(click)
 
+        self._cd_page = Adw.StatusPage(icon_name="media-optical-cd-audio-symbolic", vexpand=True)
+        self._media_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
+        self._media_stack.add_named(self._video, "video")
+        self._media_stack.add_named(self._cd_page, "cd")
+
         player_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        player_box.append(self._video)
+        player_box.append(self._media_stack)
         player_box.append(self._build_controls())
 
         self._stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
@@ -184,9 +192,9 @@ class MainWindow(Adw.ApplicationWindow):
             bar.append(b)
             return b
 
-        button("media-skip-backward-symbolic", "Previous chapter", self._player.previous_chapter)
+        self._prev_btn = button("media-skip-backward-symbolic", "Previous chapter", self._skip_back)
         self._play_btn = button("media-playback-start-symbolic", "Play/Pause (Space)", self._player.toggle_pause)
-        button("media-skip-forward-symbolic", "Next chapter", self._player.next_chapter)
+        self._next_btn = button("media-skip-forward-symbolic", "Next chapter", self._skip_forward)
 
         self._time_label = Gtk.Label(label="0:00 / 0:00", width_chars=17)
         self._time_label.add_css_class("numeric")
@@ -257,20 +265,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._rip_btn.set_sensitive(self._rip_job is None)
 
         if kind is DiscKind.AUDIO:
-            tracks, leadout = self._drive.cd_tracks()
-            self._audio_spans = audio_track_spans(tracks, leadout)
             label = label or "Audio CD"
-            total = self._audio_spans[-1][2] if self._audio_spans else 0
-            self._show_empty_page(
-                f"Audio CD · {len(self._audio_spans)} tracks · {format_duration(total)}",
-                "Use Rip to save the tracks as FLAC files.",
-            )
         self._disc_label = label or "Disc"
         self._disc_row.set_subtitle(self._disc_label)
         self._window_title.set_subtitle(self._disc_label)
 
         if kind is DiscKind.AUDIO:
             self._region_row.set_subtitle("—")
+            self._load_audio_cd()
             return
         if mount and not is_video:
             self._region_row.set_subtitle("—")
@@ -285,9 +287,97 @@ class MainWindow(Adw.ApplicationWindow):
         self._autoplay_main = True
         self._stack.set_visible_child_name("player")
 
+    def _load_audio_cd(self) -> None:
+        tracks, leadout = self._drive.cd_tracks()
+        self._audio_spans = audio_track_spans(tracks, leadout)
+        if not self._audio_spans:
+            self._show_empty_page("No audio tracks", "The disc's table of contents couldn't be read.")
+            return
+        self._set_cd_mode(True)
+        self._build_cd_rows()
+        self._loaded = True
+        self._stack.set_visible_child_name("player")
+        self._play_cd_track(self._audio_spans[0][0])
+
+    def _set_cd_mode(self, on: bool) -> None:
+        self._cd_mode = on
+        self._cd_track = None
+        self._media_stack.set_visible_child_name("cd" if on else "video")
+        self._titles_group.set_title("Tracks" if on else "Titles")
+        self._titles_group.set_description("Click a track to play it" if on else "Click a title or chapter to play it")
+        # Audio CDs have a single stereo stream and no subtitles.
+        self._audio_dd.set_visible(not on)
+        self._subs_dd.set_visible(not on)
+        self._prev_btn.set_tooltip_text("Previous track" if on else "Previous chapter")
+        self._next_btn.set_tooltip_text("Next track" if on else "Next chapter")
+
+    def _build_cd_rows(self) -> None:
+        self._clear_title_rows()
+        for number, start, end in self._audio_spans:
+            row = Adw.ActionRow(title=f"Track {number}", subtitle=format_duration(end - start), activatable=True)
+            row.connect("activated", lambda _r, n=number: self._play_cd_track(n))
+            marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
+            marker.add_css_class("accent")
+            row.add_prefix(marker)
+            self._title_markers[number] = marker
+            self._titles_group.add(row)
+            self._title_rows.append(row)
+
+    def _cd_span(self, number: int | None) -> tuple[int, int, int] | None:
+        return next((s for s in self._audio_spans if s[0] == number), None)
+
+    def _play_cd_track(self, number: int) -> None:
+        self._cd_track = number
+        self._player.open_cd_track(self._drive.device, number)
+        span = self._cd_span(number)
+        total = len(self._audio_spans)
+        self._cd_page.set_title(f"Track {number}")
+        self._cd_page.set_description(
+            f"{self._disc_label} · track {number} of {total}"
+            + (f" · {format_duration(span[2] - span[1])}" if span else "")
+        )
+        for n, marker in self._title_markers.items():
+            marker.set_opacity(1 if n == number else 0)
+        self._window_title.set_subtitle(f"{self._disc_label} · Track {number}")
+
+    def _skip_back(self) -> None:
+        if not self._cd_mode:
+            self._player.previous_chapter()
+        elif self._cd_track is not None:
+            target = track_before([s[0] for s in self._audio_spans], self._cd_track, self._player.time_ms())
+            if target == self._cd_track:
+                self._player.seek(0)
+            else:
+                self._play_cd_track(target)
+
+    def _skip_forward(self) -> None:
+        if not self._cd_mode:
+            self._player.next_chapter()
+        elif self._cd_track is not None:
+            target = track_after([s[0] for s in self._audio_spans], self._cd_track)
+            if target is not None:
+                self._play_cd_track(target)
+
+    def _tick_cd(self) -> None:
+        if self._player.is_ended() and self._cd_track is not None:
+            target = track_after([s[0] for s in self._audio_spans], self._cd_track)
+            if target is not None:
+                self._play_cd_track(target)
+            else:
+                self._player.stop()  # end of disc: stay on the last track, ready to replay
+        span = self._cd_span(self._cd_track)
+        length = self._player.length_ms() or (span[2] - span[1] if span else 0)
+        now = self._player.time_ms()
+        self._time_label.set_label(f"{format_duration(now)} / {format_duration(length)}")
+        self._seek.set_range(0, max(length, 1))
+        if time.monotonic() > self._seek_hold_until:
+            self._seek.set_value(now)
+
     def _unload_disc(self) -> None:
         if self._loaded:
             self._player.stop()
+        if self._cd_mode:
+            self._set_cd_mode(False)
         self._loaded = self._load_pending = False
         self._titles, self._disc_info = [], []
         self._last_position = None
@@ -327,7 +417,7 @@ class MainWindow(Adw.ApplicationWindow):
             parts.append(f"{len(chapters)} chapters" if len(chapters) != 1 else "1 chapter")
             if main is not None and t.index == main.index:
                 parts.append("main")
-            marker = Gtk.Image(icon_name="media-playback-start-symbolic", visible=False)
+            marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
             marker.add_css_class("accent")
             self._title_markers[t.index] = marker
 
@@ -361,7 +451,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not self._loaded:
             return True
 
-        if not self._titles:
+        if self._cd_mode:
+            self._tick_cd()
+        elif not self._titles:
             raw = self._player.titles()
             if raw:
                 self._titles = apply_disc_info(raw, self._disc_info)
@@ -371,10 +463,11 @@ class MainWindow(Adw.ApplicationWindow):
                     self._player.play_title(main.index)
                 self._autoplay_main = False
 
-        self._sync_position()
+        if not self._cd_mode:
+            self._sync_position()
         playing = self._player.is_playing()
         self._play_btn.set_icon_name("media-playback-pause-symbolic" if playing else "media-playback-start-symbolic")
-        if self._ticks % 4 == 0:
+        if self._ticks % 4 == 0 and not self._cd_mode:
             self._set_tracks(self._player.audio_tracks(), self._player.subtitle_tracks())
         return True
 
@@ -395,7 +488,7 @@ class MainWindow(Adw.ApplicationWindow):
         if position != self._last_position and title is not None:
             self._last_position = position
             for idx, marker in self._title_markers.items():
-                marker.set_visible(idx == title.index)
+                marker.set_opacity(1 if idx == title.index else 0)
             chapter = f" · Chapter {position[1] + 1}" if position[1] >= 0 else ""
             self._window_title.set_subtitle(f"{self._disc_label} · {title.label}{chapter}")
 
