@@ -2,17 +2,29 @@
 
 import threading
 import time
+from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from domain.disc import DriveStatus  # noqa: E402
+from domain.disc import DiscKind, DriveStatus  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
+from domain.rip import (  # noqa: E402
+    RipKind,
+    RipOptions,
+    audio_track_commands,
+    audio_track_spans,
+    dvd_title_command,
+    rip_options,
+    safe_filename,
+    unique_name,
+)
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
+from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
 from dvdplayer.video_view import VideoView  # noqa: E402
 
 TICK_MS = 250
@@ -52,6 +64,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._seek_hold_until = 0.0
         self._ticks = 0
         self._last_position: tuple[int, int] | None = None
+        self._rip_options = RipOptions((), "No disc")
+        self._rip_job: RipJob | None = None
+        self._rip_dest: Path | None = None
+        self._audio_spans: list[tuple[int, int, int]] = []
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -78,13 +94,22 @@ class MainWindow(Adw.ApplicationWindow):
         reload_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Reload disc")
         reload_btn.connect("clicked", lambda *_: self._reload_disc())
         header.pack_end(reload_btn)
+        self._rip_btn = Gtk.Button(
+            child=Adw.ButtonContent(icon_name="document-save-symbolic", label="Rip"),
+            tooltip_text="Rip disc to file…",
+            sensitive=False,
+        )
+        self._rip_btn.connect("clicked", lambda *_: self._open_rip_dialog())
+        header.pack_end(self._rip_btn)
+        self._reload_btn = reload_btn
 
         self._split = Adw.OverlaySplitView(sidebar=self._build_sidebar(), content=self._build_content())
         self._split.set_min_sidebar_width(280)
         self._split.set_max_sidebar_width(360)
         sidebar_btn.bind_property("active", self._split, "show-sidebar", GObject.BindingFlags.BIDIRECTIONAL)
 
-        self._toolbar_view = Adw.ToolbarView(content=self._split)
+        self._toasts = Adw.ToastOverlay(child=self._split)
+        self._toolbar_view = Adw.ToolbarView(content=self._toasts)
         self._toolbar_view.add_top_bar(header)
         self.set_content(self._toolbar_view)
 
@@ -111,6 +136,17 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._titles_group = Adw.PreferencesGroup(title="Titles", description="Click a title or chapter to play it")
         box.append(self._titles_group)
+
+        self._rip_group = Adw.PreferencesGroup(title="Ripping", visible=False)
+        self._rip_row = Adw.ActionRow(title="Ripping…")
+        cancel = Gtk.Button(icon_name="process-stop-symbolic", tooltip_text="Cancel rip", valign=Gtk.Align.CENTER)
+        cancel.add_css_class("flat")
+        cancel.connect("clicked", lambda *_: self._rip_job and self._rip_job.cancel())
+        self._rip_row.add_suffix(cancel)
+        self._rip_group.add(self._rip_row)
+        self._rip_bar = Gtk.ProgressBar(margin_top=8)
+        self._rip_group.add(self._rip_bar)
+        box.insert_child_after(self._rip_group, drive_group)
 
         return Gtk.ScrolledWindow(child=box, hscrollbar_policy=Gtk.PolicyType.NEVER)
 
@@ -139,6 +175,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_controls(self) -> Gtk.Widget:
         bar = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=8, margin_end=8)
+        self._controls = bar
 
         def button(icon: str, tip: str, handler) -> Gtk.Button:
             b = Gtk.Button(icon_name=icon, tooltip_text=tip, valign=Gtk.Align.CENTER)
@@ -208,18 +245,36 @@ class MainWindow(Adw.ApplicationWindow):
         return True
 
     def _try_load_disc(self) -> None:
+        kind = self._drive.disc_kind()
         label, mount = self._drive.label_and_mount()
-        if not mount and self._mount_waits < MOUNT_WAIT_POLLS:
+        # Audio CDs have no filesystem, so there is nothing to wait for.
+        if kind is not DiscKind.AUDIO and not mount and self._mount_waits < MOUNT_WAIT_POLLS:
             self._mount_waits += 1
             return
         self._load_pending = False
+        is_video = Drive.is_dvd_video(mount)
+        self._rip_options = rip_options(kind, is_video, self._drive.is_copy_protected())
+        self._rip_btn.set_sensitive(self._rip_job is None)
+
+        if kind is DiscKind.AUDIO:
+            tracks, leadout = self._drive.cd_tracks()
+            self._audio_spans = audio_track_spans(tracks, leadout)
+            label = label or "Audio CD"
+            total = self._audio_spans[-1][2] if self._audio_spans else 0
+            self._show_empty_page(
+                f"Audio CD · {len(self._audio_spans)} tracks · {format_duration(total)}",
+                "Use Rip to save the tracks as FLAC files.",
+            )
         self._disc_label = label or "Disc"
         self._disc_row.set_subtitle(self._disc_label)
         self._window_title.set_subtitle(self._disc_label)
 
-        if mount and not Drive.is_dvd_video(mount):
+        if kind is DiscKind.AUDIO:
             self._region_row.set_subtitle("—")
-            self._show_empty_page("Not a video DVD", "This disc has no VIDEO_TS folder.")
+            return
+        if mount and not is_video:
+            self._region_row.set_subtitle("—")
+            self._show_empty_page("Not a video DVD", "This disc has no VIDEO_TS folder. Use Rip to save a disc image.")
             return
 
         self._region_row.set_subtitle(Drive.region_text(mount) if mount else "Unknown")
@@ -236,6 +291,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._loaded = self._load_pending = False
         self._titles, self._disc_info = [], []
         self._last_position = None
+        self._audio_spans = []
+        self._rip_options = RipOptions((), "No disc")
+        self._rip_btn.set_sensitive(False)
         self._clear_title_rows()
         self._set_tracks([], [])
         self._video.clear()
@@ -386,6 +444,167 @@ class MainWindow(Adw.ApplicationWindow):
             self._video.show_frame(data, width, height, stride, aspect)
         return False
 
+    # ---------- ripping ----------
+
+    def _rip_choices(self) -> list[tuple[str, RipKind, int]]:
+        choices = []
+        for kind in self._rip_options.kinds:
+            if kind is RipKind.DVD_TITLE:
+                for t in self._titles or self._player.titles():
+                    length = f" · {format_duration(t.duration_ms)}" if t.duration_ms else ""
+                    choices.append((f"{t.label}{length} → MKV", kind, t.index))
+            elif kind is RipKind.AUDIO_TRACKS:
+                choices.append((f"All {len(self._audio_spans)} tracks → FLAC", kind, -1))
+            else:
+                choices.append(("Whole disc image → ISO", kind, -1))
+        return choices
+
+    @staticmethod
+    def _default_folder(kind: RipKind) -> Path:
+        special = {
+            RipKind.DVD_TITLE: GLib.UserDirectory.DIRECTORY_VIDEOS,
+            RipKind.AUDIO_TRACKS: GLib.UserDirectory.DIRECTORY_MUSIC,
+            RipKind.DISC_IMAGE: GLib.UserDirectory.DIRECTORY_DOWNLOAD,
+        }[kind]
+        return Path(GLib.get_user_special_dir(special) or GLib.get_home_dir())
+
+    def _open_rip_dialog(self) -> None:
+        choices = self._rip_choices()
+        if not choices:
+            alert = Adw.AlertDialog(heading="Can't rip this disc", body=self._rip_options.blocked_reason)
+            alert.add_response("ok", "OK")
+            alert.present(self)
+            return
+
+        dialog = Adw.Dialog(title="Rip to File", content_width=460)
+        state = {"folder": None}
+
+        what = Adw.ComboRow(title="What", model=Gtk.StringList.new([c[0] for c in choices]))
+        main = main_title(self._titles)
+        for i, (_, kind, index) in enumerate(choices):
+            if kind is RipKind.DVD_TITLE and main and index == main.index:
+                what.set_selected(i)
+        folder_row = Adw.ActionRow(title="Save to")
+        folder_row.add_css_class("property")
+        choose = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        folder_row.add_suffix(choose)
+
+        def current_folder() -> Path:
+            return state["folder"] or self._default_folder(choices[what.get_selected()][1])
+
+        def refresh(*_):
+            folder_row.set_subtitle(str(current_folder()))
+
+        def on_folder_chosen(file_dialog, result):
+            try:
+                folder = file_dialog.select_folder_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            state["folder"] = Path(folder.get_path())
+            refresh()
+
+        choose.connect(
+            "clicked",
+            lambda *_: Gtk.FileDialog(
+                title="Save rips to", initial_folder=Gio.File.new_for_path(str(current_folder()))
+            ).select_folder(self, None, on_folder_chosen),
+        )
+        what.connect("notify::selected", refresh)
+        refresh()
+
+        group = Adw.PreferencesGroup(
+            description="Copies streams as-is (no re-encoding), so quality is identical to the disc. "
+            "Playback stops while ripping."
+        )
+        group.add(what)
+        group.add(folder_row)
+
+        start = Gtk.Button(label="Start Rip", halign=Gtk.Align.CENTER, margin_bottom=18)
+        start.add_css_class("pill")
+        start.add_css_class("suggested-action")
+
+        def on_start(*_):
+            _, kind, index = choices[what.get_selected()]
+            dialog.close()
+            self._start_rip(kind, index, current_folder())
+
+        start.connect("clicked", on_start)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page = Adw.PreferencesPage()
+        page.add(group)
+        body.append(page)
+        body.append(start)
+        toolbar = Adw.ToolbarView(content=body)
+        toolbar.add_top_bar(Adw.HeaderBar())
+        dialog.set_child(toolbar)
+        dialog.present(self)
+
+    def _start_rip(self, kind: RipKind, title_index: int, folder: Path) -> None:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._toasts.add_toast(Adw.Toast(title=f"Can't use that folder: {e.strerror}"))
+            return
+
+        def free(name: str) -> str:
+            return str(folder / unique_name(name, lambda n: (folder / n).exists()))
+
+        base = safe_filename(self._disc_label)
+        device = self._drive.device
+        if kind is RipKind.DVD_TITLE:
+            title = next((t for t in self._titles if t.index == title_index), None)
+            out = free(f"{base} - {title.label if title else f'Title {title_index + 1}'}.mkv")
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, [out])
+            what, self._rip_dest = f"Ripping {title.label if title else 'title'}", Path(out)
+            steps = [(dvd_title_command(device, title_index + 1, out), title.duration_ms if title else 0)]
+        elif kind is RipKind.AUDIO_TRACKS:
+            album = Path(free(base))
+            album.mkdir()
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, [str(album / "Track *.flac")])
+            what, self._rip_dest = f"Ripping {len(self._audio_spans)} tracks", album
+            steps = audio_track_commands(device, self._audio_spans, str(album / "Track {:02d}.flac"))
+        else:
+            out = free(f"{base}.iso")
+            job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
+            what, self._rip_dest = "Copying disc image", Path(out)
+
+        # The drive can't serve VLC and the rip at the same time without crawling.
+        self._player.stop()
+        self._video.clear()
+        self._set_busy(True)
+        self._rip_job = job
+        self._rip_row.set_title(what)
+        self._rip_row.set_subtitle("starting…")
+        self._rip_bar.set_fraction(0)
+        self._rip_group.set_visible(True)
+        if isinstance(job, ImageJob):
+            job.start(device, out, self._drive.size_bytes())
+        else:
+            job.start(steps)
+
+    def _set_busy(self, busy: bool) -> None:
+        for widget in (self._rip_btn, self._eject_btn, self._reload_btn, self._titles_group, self._controls):
+            widget.set_sensitive(not busy)
+
+    def _on_rip_progress(self, fraction: float, text: str) -> bool:
+        self._rip_bar.set_fraction(fraction)
+        self._rip_row.set_subtitle(text)
+        return False
+
+    def _on_rip_done(self, ok: bool, message: str) -> bool:
+        self._rip_job = None
+        self._rip_group.set_visible(False)
+        self._set_busy(False)
+        self._rip_btn.set_sensitive(self._status is DriveStatus.DISC_OK and not self._load_pending)
+        if ok and self._rip_dest is not None:
+            toast = Adw.Toast(title=f"Saved {self._rip_dest.name}", button_label="Open Folder", timeout=0)
+            folder = self._rip_dest if self._rip_dest.is_dir() else self._rip_dest.parent
+            toast.connect("button-clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(folder.as_uri(), None))
+        else:
+            toast = Adw.Toast(title=message, timeout=8)
+        self._toasts.add_toast(toast)
+        return False
+
     # ---------- event handlers ----------
 
     def _on_seek(self, _scale, _scroll, value: float) -> bool:
@@ -449,6 +668,8 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def shutdown(self) -> None:
-        """Stop VLC; safe to call twice (window close, then app shutdown)."""
+        """Stop VLC and any rip; safe to call twice (window close, then app shutdown)."""
+        if self._rip_job is not None:
+            self._rip_job.cancel()
         self._loaded = False
         self._player.release()

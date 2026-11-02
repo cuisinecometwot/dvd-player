@@ -51,3 +51,29 @@ def describe_regions(regions: list[int]) -> str:
         return "No region"
     prefix = "Region" if len(regions) == 1 else "Regions"
     return f"{prefix} {', '.join(map(str, regions))}"
+
+
+class DiscKind(Enum):
+    UNKNOWN = "unknown"
+    AUDIO = "audio"
+    DATA = "data"
+    MIXED = "mixed"
+
+
+# Linux CDROM_DISC_STATUS results: CDS_AUDIO=100, CDS_DATA_1..CDS_XA_2_2=101..104, CDS_MIXED=105.
+def disc_kind_from_code(code: int) -> DiscKind:
+    if code == 100:
+        return DiscKind.AUDIO
+    if 101 <= code <= 104:
+        return DiscKind.DATA
+    if code == 105:
+        return DiscKind.MIXED
+    return DiscKind.UNKNOWN
+
+
+CSS_PROTECTION_TYPE = 1
+
+
+def is_css_protected(cpst: int) -> bool:
+    """cpst is the copy-protection system type from the DVD copyright structure."""
+    return cpst == CSS_PROTECTION_TYPE

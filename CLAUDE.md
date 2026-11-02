@@ -9,14 +9,21 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - **Solution**: one window — drive panel + title/chapter list on the left, embedded video on the right; disc menus skipped.
 - **v1 features**: embedded playback (play/pause/seek/volume/fullscreen), title & chapter picker with real lengths,
   drive status/eject/close tray with auto-detect on insert, audio/subtitle track switching.
+- **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
+  CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
 - **Engagement**: utility, used whenever a disc is played. Personal, non-commercial, not distributed. English UI.
 - **UI**: libadwaita, forced dark (video app). Keys: Space, F/F11, Esc, ←/→ seek 10 s, ↑/↓ volume.
 
 ## Stack & architecture
 - Python 3 + GTK4/libadwaita (system PyGObject), libvlc via `python-vlc` in `.venv` (created with `--system-site-packages`).
 - Chosen over the Tauri desktop default: tiny local tool, GTK/libadwaita already installed, no build step.
-- `domain/` — pure stdlib: IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math.
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject), `player.py` (libvlc), `video_view.py`, `window.py`.
+- `domain/` — pure stdlib: IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
+  rip rules + ffmpeg command building (`rip.py`).
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/CSS check), `player.py` (libvlc),
+  `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
+- Ripping uses system `ffmpeg` (`dvdvideo` and `libcdio` demuxers). Audio CDs run one ffmpeg per track: the single-pass
+  segment muxer writes FLAC headers with wrong lengths.
+- VLC must be released before the interpreter exits (its video thread calls into Python), hence the app `shutdown` hook.
 - Video: libvlc renders RV32 frames to memory (`video_set_callbacks`), GTK draws them as textures — VLC can't embed
   into a GTK4 widget on Wayland.
 - libvlc reports 0 length for DVD titles via `dvdsimple://`, so lengths/aspect come from the IFO files instead.
@@ -27,5 +34,6 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Run: `./run.sh` · Test: `.venv/bin/python -m pytest` · Lint: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 
 ## Progress
-- Done: v1 features above; domain unit tests.
-- Next (ideas): rip audio CDs / unprotected discs to file; audio CD playback (`cdda://`); remember last position.
+- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO).
+- Untested on real media: audio CD and unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
+- Next (ideas): audio CD playback (`cdda://`); CD track names via MusicBrainz; remember last position.

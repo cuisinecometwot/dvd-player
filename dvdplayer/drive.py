@@ -3,14 +3,34 @@
 import fcntl
 import json
 import os
+import struct
 import subprocess
 from pathlib import Path
 
-from domain.disc import DriveStatus, describe_regions, drive_status_from_code, parse_region_mask, regions_from_mask
+from domain.disc import (
+    DiscKind,
+    DriveStatus,
+    describe_regions,
+    disc_kind_from_code,
+    drive_status_from_code,
+    is_css_protected,
+    parse_region_mask,
+    regions_from_mask,
+)
 from domain.ifo import parse_title_table, parse_vts_aspect, parse_vts_title_durations
+from domain.rip import CD_DATA_TRACK_FLAG, CdTrack
 
 CDROM_DRIVE_STATUS = 0x5326
+CDROM_DISC_STATUS = 0x5327
+CDROMREADTOCHDR = 0x5305
+CDROMREADTOCENTRY = 0x5306
+DVD_READ_STRUCT = 0x5390
 CDSL_CURRENT = 0x7FFFFFFF
+CDROM_LBA = 0x01
+CDROM_LEADOUT = 0xAA
+DVD_STRUCT_COPYRIGHT = 0x01
+# struct cdrom_tocentry: track, adr:4|ctrl:4, format, pad, int lba, datamode, pad
+_TOCENTRY = struct.Struct("BBBxiBxxx")
 
 
 class Drive:
@@ -38,6 +58,47 @@ class Drive:
             return DriveStatus.NO_INFO
         finally:
             os.close(fd)
+
+    def _ioctl(self, request: int, arg):
+        fd = os.open(self.device, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            return fcntl.ioctl(fd, request, arg)
+        finally:
+            os.close(fd)
+
+    def disc_kind(self) -> DiscKind:
+        try:
+            return disc_kind_from_code(self._ioctl(CDROM_DISC_STATUS, 0))
+        except OSError:
+            return DiscKind.UNKNOWN
+
+    def is_copy_protected(self) -> bool:
+        """True for CSS-encrypted DVDs; CDs (and drives that refuse the query) report False."""
+        buf = bytearray(struct.pack("BBBB", DVD_STRUCT_COPYRIGHT, 0, 0, 0) + bytes(2048))
+        try:
+            self._ioctl(DVD_READ_STRUCT, buf)
+        except OSError:
+            return False
+        return is_css_protected(buf[2])
+
+    def cd_tracks(self) -> tuple[list[CdTrack], int]:
+        """Audio CD table of contents: tracks and the lead-out LBA."""
+        try:
+            first, last = self._ioctl(CDROMREADTOCHDR, bytes(2))[:2]
+            tracks = []
+            for number in [*range(first, last + 1), CDROM_LEADOUT]:
+                raw = self._ioctl(CDROMREADTOCENTRY, _TOCENTRY.pack(number, 0, CDROM_LBA, 0, 0))
+                _, adr_ctrl, _, lba, _ = _TOCENTRY.unpack(raw)
+                tracks.append(CdTrack(number, lba, bool((adr_ctrl >> 4) & CD_DATA_TRACK_FLAG)))
+            return tracks[:-1], tracks[-1].start_lba
+        except (OSError, struct.error, ValueError):
+            return [], 0
+
+    def size_bytes(self) -> int:
+        try:
+            return int((Path("/sys/block") / Path(self.device).name / "size").read_text()) * 512
+        except (OSError, ValueError):
+            return 0
 
     def label_and_mount(self) -> tuple[str, str]:
         try:
