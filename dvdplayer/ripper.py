@@ -2,6 +2,7 @@
 
 import glob
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -9,12 +10,13 @@ from collections.abc import Callable
 
 from gi.repository import GLib
 
-from domain.rip import eta_text, parse_progress_line, progress_fraction
+from domain.rip import Pipeline, eta_text, parse_progress_line, progress_fraction
 
 ProgressHandler = Callable[[float, str], None]
 DoneHandler = Callable[[bool, str], None]
 IMAGE_CHUNK = 2048 * 512  # 1 MiB, a whole number of DVD sectors
 PROGRESS_INTERVAL_S = 0.25
+KILL_GRACE_S = 3
 
 
 class RipJob:
@@ -48,15 +50,28 @@ class RipJob:
 
 
 class FfmpegJob(RipJob):
-    def start(self, steps: list[tuple[list[str], int]]) -> None:
-        """Run (command, duration_ms) steps in order; progress spans all of them."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._procs: list[subprocess.Popen] = []
+        self._procs_lock = threading.Lock()
+
+    def start(self, steps: list[tuple[Pipeline, int]]) -> None:
+        """Run (pipeline, duration_ms) steps in order; progress spans all of them."""
         threading.Thread(target=self._run, args=(steps,), daemon=True).start()
 
-    def _run(self, steps: list[tuple[list[str], int]]) -> None:
+    def cancel(self) -> None:
+        # Kill directly: a stuck reader prints nothing, so the progress loop may never see the flag.
+        super().cancel()
+        with self._procs_lock:
+            procs = list(self._procs)
+        for proc in procs:
+            _stop(proc)
+
+    def _run(self, steps: list[tuple[Pipeline, int]]) -> None:
         total = sum(duration for _, duration in steps)
         done_before = 0
-        for command, duration in steps:
-            error = self._run_one(command, done_before, total)
+        for pipeline, duration in steps:
+            error = self._run_one(pipeline, done_before, total)
             if error is not None:
                 self._finish(False, error)
                 return
@@ -64,24 +79,80 @@ class FfmpegJob(RipJob):
         self._report(1.0, force=True)
         self._finish(True, "Rip finished")
 
-    def _run_one(self, command: list[str], done_before: int, total: int) -> str | None:
+    def _run_one(self, pipeline: Pipeline, done_before: int, total: int) -> str | None:
+        procs: list[subprocess.Popen] = []
+        stderr_tails: list[tuple[list[str], threading.Thread]] = []
         try:
-            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            with self._procs_lock:
+                if self._cancelled.is_set():
+                    return "Rip cancelled"
+                for i, command in enumerate(pipeline):
+                    last = i == len(pipeline) - 1
+                    proc = subprocess.Popen(
+                        command,
+                        stdin=procs[-1].stdout if procs else subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=last,
+                    )
+                    if procs:
+                        procs[-1].stdout.close()  # only the next process holds the read end now
+                    procs.append(proc)
+                    stderr_tails.append(_drain(proc.stderr))
+                self._procs = procs
         except OSError as e:
-            return f"Couldn't start ffmpeg: {e}"
-        for line in proc.stdout:
-            if self._cancelled.is_set():
-                proc.terminate()
-                break
+            for proc in procs:
+                _stop(proc)
+            return f"Couldn't start {e.filename or pipeline[0][0]}: {e.strerror or e}"
+
+        ffmpeg = procs[-1]
+        for line in ffmpeg.stdout:
             done_ms = parse_progress_line(line)
             if done_ms is not None:
                 self._report(progress_fraction(done_before + done_ms, total))
-        proc.wait()
+        for proc in procs:
+            proc.wait()
+        with self._procs_lock:
+            self._procs = []
         if self._cancelled.is_set():
             return "Rip cancelled"
-        if proc.returncode != 0:
-            return "ffmpeg failed: " + (proc.stderr.read().strip().splitlines() or ["unknown error"])[-1]
+        for command, proc, (tail, reader) in zip(pipeline, procs, stderr_tails, strict=True):
+            # A reader killed by SIGPIPE only means the process after it gave up first.
+            if proc.returncode not in (0, -signal.SIGPIPE):
+                reader.join(1)
+                detail = tail[-1].strip() if tail else f"exit code {proc.returncode}"
+                return f"{command[0]} failed: {detail}"
         return None
+
+
+def _drain(stream) -> tuple[list[str], threading.Thread]:
+    """Read a stderr pipe in the background so a chatty process can't block on a full pipe."""
+    tail: list[str] = []
+
+    def pump() -> None:
+        for raw in stream:
+            line = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+            if line.strip():
+                tail[:] = [*tail[-4:], line]
+
+    thread = threading.Thread(target=pump, daemon=True)
+    thread.start()
+    return tail, thread
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """SIGTERM, then SIGKILL: ffmpeg ignores SIGTERM while its demuxer thread is stuck."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+
+    def reap() -> None:
+        try:
+            proc.wait(KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    threading.Thread(target=reap, daemon=True).start()
 
 
 class ImageJob(RipJob):

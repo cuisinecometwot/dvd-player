@@ -70,32 +70,38 @@ def safe_filename(text: str, fallback: str = "disc") -> str:
     return cleaned[:120] or fallback
 
 
-def dvd_title_command(device: str, title_number: int, output: str) -> list[str]:
+Pipeline = list[list[str]]  # commands whose stdout feeds the next one's stdin; the last is ffmpeg
+
+
+def dvd_title_command(device: str, title_number: int, output: str) -> Pipeline:
     """Lossless remux of one DVD title (1-based) with all audio and subtitle streams."""
-    return [
+    return [[
         *_FFMPEG,
         "-f", "dvdvideo", "-title", str(title_number), "-i", device,
         "-map", "0", "-c", "copy", output,
-    ]  # fmt: skip
+    ]]  # fmt: skip
 
 
 def audio_track_commands(
     device: str, spans: list[tuple[int, int, int]], output_pattern: str
-) -> list[tuple[list[str], int]]:
-    """One ffmpeg run per track, so every FLAC gets a correct header; returns (command, duration_ms) pairs.
+) -> list[tuple[Pipeline, int]]:
+    """One cd-paranoia | ffmpeg pipeline per track, so every FLAC gets a correct header.
 
-    output_pattern is formatted with the track number, e.g. "Track {:02d}.flac".
+    Returns (pipeline, duration_ms) pairs. cd-paranoia does the reading because ffmpeg's libcdio
+    demuxer spins forever once a read comes within a fraction of a second of the lead-out,
+    i.e. on every disc's last track. output_pattern is formatted with the track number.
     """
-    commands = []
-    for number, start_ms, end_ms in spans:
-        duration = end_ms - start_ms
-        cmd = [
-            *_FFMPEG,
-            "-f", "libcdio", "-ss", f"{start_ms / 1000:.3f}", "-t", f"{duration / 1000:.3f}", "-i", device,
-            "-map", "0:a", "-c:a", "flac", output_pattern.format(number),
-        ]  # fmt: skip
-        commands.append((cmd, duration))
-    return commands
+    return [
+        (
+            [
+                ["cd-paranoia", "--force-cdrom-device", device, "--disable-paranoia", "--quiet",
+                 "--output-wav", f"{number}-{number}", "-"],
+                [*_FFMPEG, "-f", "wav", "-i", "pipe:0", "-c:a", "flac", output_pattern.format(number)],
+            ],
+            end_ms - start_ms,
+        )
+        for number, start_ms, end_ms in spans
+    ]  # fmt: skip
 
 
 _FFMPEG = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats"]

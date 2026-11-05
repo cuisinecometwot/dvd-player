@@ -22,8 +22,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
   rip rules + ffmpeg command building (`rip.py`).
 - `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/CSS check), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
-- Ripping uses system `ffmpeg` (`dvdvideo` and `libcdio` demuxers). Audio CDs run one ffmpeg per track: the single-pass
-  segment muxer writes FLAC headers with wrong lengths.
+- Ripping uses system `ffmpeg` (`dvdvideo` demuxer) and `cd-paranoia` (libcdio-paranoia) for audio CDs, piped into
+  ffmpeg for FLAC, one pipeline per track (the single-pass segment muxer writes wrong FLAC lengths). Not ffmpeg's
+  `libcdio` demuxer: it spins forever near the lead-out (every last track) and ignores SIGTERM, so cancel SIGKILLs.
 - VLC must be released before the interpreter exits (its video thread calls into Python), hence the app `shutdown` hook.
 - Video: libvlc renders RV32 frames to memory (`video_set_callbacks`), GTK draws them as textures — VLC can't embed
   into a GTK4 widget on Wayland.
@@ -38,5 +39,5 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 
 ## Progress
 - Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback.
-- Untested on real media: audio CD and unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
+- Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
 - Next (ideas): CD track names via MusicBrainz; remember last position.

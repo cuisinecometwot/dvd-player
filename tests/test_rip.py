@@ -42,14 +42,16 @@ def test_audio_track_spans_skip_data_tracks():
 def test_audio_track_commands_one_per_track():
     cmds = audio_track_commands("/dev/sr0", [(1, 0, 60_000), (2, 60_000, 90_500)], "Track {:02d}.flac")
     assert [d for _, d in cmds] == [60_000, 30_500]
-    second, _ = cmds[1]
-    assert second[second.index("-ss") + 1] == "60.000" and second[second.index("-t") + 1] == "30.500"
-    assert second.index("-ss") < second.index("-i")  # input seek: don't decode the skipped audio
-    assert second[-1] == "Track 02.flac"
+    (reader, encoder), _ = cmds[1]
+    # cd-paranoia reads the whole track itself: ffmpeg's libcdio demuxer hangs at the lead-out.
+    assert reader[0] == "cd-paranoia" and "2-2" in reader and reader[-1] == "-"
+    assert reader[reader.index("--force-cdrom-device") + 1] == "/dev/sr0"
+    assert encoder[0] == "ffmpeg" and "pipe:0" in encoder and "libcdio" not in encoder
+    assert encoder[-1] == "Track 02.flac"
 
 
 def test_dvd_title_command():
-    cmd = dvd_title_command("/dev/sr0", 2, "out.mkv")
+    [cmd] = dvd_title_command("/dev/sr0", 2, "out.mkv")
     assert cmd[cmd.index("-title") + 1] == "2"
     assert ["-c", "copy"] == cmd[cmd.index("-c") : cmd.index("-c") + 2]
     assert cmd[-1] == "out.mkv"
