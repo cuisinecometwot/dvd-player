@@ -43,7 +43,7 @@ def main() -> int:
             frames += 1
 
         player = Player(on_frame)
-        player.open(str(media))
+        player.open(media.as_uri())  # as the app does; libvlc rejects 'D:/x' paths with forward slashes
         time.sleep(PLAY_S)
         played_ms, length_ms = player.time_ms(), player.length_ms()
         player.release()
