@@ -32,7 +32,7 @@ from domain.rip import (  # noqa: E402
     safe_filename,
     unique_name,
 )
-from dvdplayer import lrclib  # noqa: E402
+from dvdplayer import lrclib, net  # noqa: E402
 from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.images import load_texture  # noqa: E402
@@ -157,6 +157,30 @@ class MainWindow(Adw.ApplicationWindow):
         self._disc_row.add_prefix(self._disc_thumb)
         self._region_row = self._info_row(drive_group, "Disc region", "—")
         box.append(drive_group)
+
+        self._online_group = Adw.PreferencesGroup(title="Album info", visible=False)
+        self._online_row = Adw.ActionRow(
+            title="—",
+            subtitle_selectable=True,
+            tooltip_text=(
+                "Names, lyrics and covers come from the disc's CD-Text when it has any, otherwise from "
+                "MusicBrainz, LRCLIB and the Cover Art Archive. Only the disc ID, barcode, song titles, "
+                "artist and track lengths are sent. Results are kept in ~/.cache/dvd-player, "
+                "so a disc is only looked up once."
+            ),
+        )
+        self._online_spinner = Adw.Spinner(visible=False)
+        self._online_icon = Gtk.Image(icon_name="emblem-ok-symbolic")
+        self._online_row.add_prefix(self._online_spinner)
+        self._online_row.add_prefix(self._online_icon)
+        self._retry_btn = Gtk.Button(
+            icon_name="view-refresh-symbolic", tooltip_text="Retry", valign=Gtk.Align.CENTER, visible=False
+        )
+        self._retry_btn.add_css_class("flat")
+        self._retry_btn.connect("clicked", lambda *_: self._cd_info.retry())
+        self._online_row.add_suffix(self._retry_btn)
+        self._online_group.add(self._online_row)
+        box.append(self._online_group)
 
         self._titles_group = Adw.PreferencesGroup(title="Titles", description="Click a title or chapter to play it")
         box.append(self._titles_group)
@@ -383,6 +407,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._cd_info.load(self._drive, tracks, leadout, self._audio_spans)
         self._build_cd_rows()
         self._refresh_cover()
+        self._refresh_online_status()
         self._loaded = True
         self._stack.set_visible_child_name("player")
         self._play_cd_track(self._audio_spans[0][0])
@@ -396,8 +421,20 @@ class MainWindow(Adw.ApplicationWindow):
         if self._cd_track is not None:
             self._show_cd_track(self._cd_track)
         self._refresh_cover()
+        self._refresh_online_status()
         if self._album_listener:
             self._album_listener()
+
+    def _refresh_online_status(self) -> None:
+        info = self._cd_info
+        self._online_group.set_visible(self._cd_mode)
+        headline, details = info.status()
+        self._online_row.set_title(headline)
+        self._online_row.set_subtitle(details)
+        self._online_spinner.set_visible(info.busy)
+        self._online_icon.set_visible(not info.busy)
+        self._online_icon.set_from_icon_name("network-offline-symbolic" if info.failed else "emblem-ok-symbolic")
+        self._retry_btn.set_visible(info.failed and not info.busy)
 
     def _set_cd_mode(self, on: bool) -> None:
         self._cd_mode = on
@@ -461,8 +498,15 @@ class MainWindow(Adw.ApplicationWindow):
             self._plain_lyrics.set_label(lyrics.plain)
             self._lyrics_stack.set_visible_child_name("plain")
         else:
-            searching = self._cd_info.resolving or (self._cd_info.named and number not in self._cd_info.known_lyrics())
-            self._lyrics_note.set_label("Looking for lyrics…" if searching else "")
+            info = self._cd_info
+            unsettled = info.resolving or (info.named and number not in info.known_lyrics())
+            if unsettled and info.busy:
+                note = "Looking for lyrics…"
+            elif unsettled and info.failed:
+                note = "Lyrics couldn't be downloaded — see Album info in the sidebar"
+            else:
+                note = ""
+            self._lyrics_note.set_label(note)
             self._lyrics_stack.set_visible_child_name("note")
 
     def _update_lyric_line(self, now_ms: int) -> None:
@@ -521,6 +565,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._cd_info.clear()
         self._lyrics_lines = []
         self._refresh_cover()
+        self._refresh_online_status()
         self._rip_options = RipOptions((), "No disc")
         self._rip_btn.set_sensitive(False)
         self._clear_title_rows()
@@ -967,13 +1012,20 @@ class MainWindow(Adw.ApplicationWindow):
         """Rip preparation run on the job thread: fetch missing lyrics, write .lrc files, add LYRICS tags."""
 
         def prepare(status):
+            offline = False
             for i, (number, start, end) in enumerate(spans, start=1):
                 track = info.track(number)
                 if number in known:
                     lyrics = known[number]  # already cached; no network
+                elif offline:
+                    continue
                 else:
                     status(f"fetching lyrics {i}/{len(spans)}…")
-                    lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
+                    try:
+                        lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
+                    except net.NetworkError:
+                        offline = True  # rip without lyrics rather than wait on every track
+                        continue
                 if lyrics is None:
                     continue
                 path, tags = outputs[number]

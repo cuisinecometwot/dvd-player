@@ -2,14 +2,12 @@
 
 import json
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from domain.cdmeta import AlbumInfo, parse_release
+from dvdplayer import net
 
 API = "https://musicbrainz.org/ws/2"
-USER_AGENT = "dvd-player/1.0 ( personal desktop tool )"
 TIMEOUT_S = 6
 REQUEST_GAP_S = 1.1  # MusicBrainz allows one request per second per client
 RETRIES = 2
@@ -21,26 +19,30 @@ class _Client:
         self._last = 0.0
 
     def get(self, path: str, **params: str) -> dict | None:
+        """Parsed JSON, None when MusicBrainz has no such entry; raises net.NetworkError otherwise."""
         url = f"{API}/{path}?{urllib.parse.urlencode({**params, 'fmt': 'json'}, safe='+')}"
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
         for attempt in range(RETRIES + 1):
             wait = self._last + REQUEST_GAP_S * (1 + 2 * attempt) - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
             try:
-                with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-                    return json.load(response)
-            except urllib.error.HTTPError as e:
-                if e.code != 503:  # 503 is MusicBrainz throttling; anything else (404...) is final
-                    return None
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-                return None  # offline: the user can still type everything in
+                data = net.get(url, timeout=TIMEOUT_S, accept="application/json")
+            except net.NetworkError as e:
+                if e.status == 503 and attempt < RETRIES:
+                    continue  # throttled: back off and retry
+                raise
+            if data is None:
+                return None
+            try:
+                return json.loads(data)
+            except ValueError as e:
+                raise net.NetworkError("bad response from MusicBrainz") from e
         return None
 
 
 def lookup(disc_id: str, barcode: str, track_count: int) -> AlbumInfo | None:
-    """Blocking; call from a worker thread."""
+    """Blocking; call from a worker thread. None = not in MusicBrainz; raises net.NetworkError if unreachable."""
     client = _Client()
     by_disc = client.get(f"discid/{urllib.parse.quote(disc_id)}", inc=RELEASE_INC) if disc_id else None
     for release in (by_disc or {}).get("releases", []):

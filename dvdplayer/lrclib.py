@@ -1,30 +1,26 @@
 """LRCLIB (lrclib.net) lyrics lookup: free, no API key; returns plain and time-synced lyrics."""
 
 import json
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from domain.lyrics import Lyrics, is_instrumental_title, pick_lyrics, search_queries
+from dvdplayer import net
 
 API = "https://lrclib.net/api"
-USER_AGENT = "dvd-player/1.0 ( personal desktop tool )"
 TIMEOUT_S = 8
 
 
 def _search(params: dict[str, str]) -> list[dict]:
-    url = f"{API}/search?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    raw = net.get(f"{API}/search?{urllib.parse.urlencode(params)}", timeout=TIMEOUT_S)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-            data = json.load(response)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return []
+        data = json.loads(raw) if raw else []
+    except ValueError as e:
+        raise net.NetworkError("bad response from LRCLIB") from e
     return data if isinstance(data, list) else []
 
 
 def fetch(title: str, artist: str, duration_s: float) -> Lyrics | None:
-    """Blocking; call from a worker thread. None for instrumentals, misses and network errors."""
+    """Blocking; call from a worker thread. None for instrumentals and misses; raises net.NetworkError."""
     if is_instrumental_title(title):
         return None
     for params in search_queries(title, artist):
