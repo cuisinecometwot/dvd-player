@@ -1,5 +1,6 @@
 """Lyrics matching rules for LRCLIB results and .lrc output (no network here)."""
 
+import bisect
 import re
 from dataclasses import dataclass
 
@@ -90,3 +91,27 @@ def lrc_path_for(flac_path: str) -> str:
 
 def lyrics_tag(lyrics: Lyrics) -> list[str]:
     return ["-metadata", f"LYRICS={lyrics.plain}"] if lyrics.plain else []
+
+
+_LRC_LINE = re.compile(r"^((?:\[\d+:\d+(?:[.:]\d+)?\])+)(.*)$")
+_LRC_STAMP = re.compile(r"\[(\d+):(\d+)(?:[.:](\d+))?\]")
+
+
+def parse_lrc(synced: str) -> list[tuple[int, str]]:
+    """(start ms, text) sorted by time; a line with several stamps (a repeated chorus) appears at each."""
+    lines = []
+    for raw in synced.splitlines():
+        m = _LRC_LINE.match(raw.strip())
+        if not m:
+            continue  # [ti:]/[ar:] headers and junk
+        text = m.group(2).strip()
+        for minutes, seconds, fraction in _LRC_STAMP.findall(m.group(1)):
+            ms = int(fraction.ljust(3, "0")[:3]) if fraction else 0
+            lines.append(((int(minutes) * 60 + int(seconds)) * 1000 + ms, text))
+    return sorted(lines, key=lambda line: line[0])
+
+
+def line_index_at(lines: list[tuple[int, str]], position_ms: int) -> int:
+    """Index of the line being sung at position_ms, or -1 before the first line."""
+    starts = [start for start, _ in lines]
+    return bisect.bisect_right(starts, position_ms) - 1

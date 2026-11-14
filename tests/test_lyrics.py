@@ -2,9 +2,11 @@ from domain.lyrics import (
     Lyrics,
     base_title,
     is_instrumental_title,
+    line_index_at,
     lrc_path_for,
     lrc_text,
     lyrics_tag,
+    parse_lrc,
     pick_lyrics,
     search_queries,
     strip_timestamps,
@@ -81,3 +83,12 @@ def test_lrc_output():
     assert text == "[ti:X]\n[ar:Y]\n[al:Z]\n[00:01.00]a\n"
     assert lyrics_tag(Lyrics("la\nla")) == ["-metadata", "LYRICS=la\nla"]
     assert lyrics_tag(Lyrics("")) == []
+
+
+def test_parse_lrc_and_line_at():
+    lines = parse_lrc("[ti:X]\n[00:21.77]one\n[00:10.5][01:00.00]chorus\nnoise\n[00:30]two")
+    assert lines == [(10_500, "chorus"), (21_770, "one"), (30_000, "two"), (60_000, "chorus")]
+    assert line_index_at(lines, 0) == -1
+    assert line_index_at(lines, 21_770) == 1
+    assert line_index_at(lines, 59_999) == 2
+    assert line_index_at(lines, 999_999) == 3

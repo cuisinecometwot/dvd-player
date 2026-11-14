@@ -11,17 +11,10 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from domain.cd import track_after, track_before  # noqa: E402
-from domain.cdmeta import (  # noqa: E402
-    AlbumInfo,
-    TrackInfo,
-    album_folder_name,
-    blank_album,
-    flac_tags,
-    musicbrainz_disc_id,
-    track_file_name,
-)
+from domain.cdcache import SOURCE_CD_TEXT, SOURCE_EDITED, SOURCE_MUSICBRAINZ  # noqa: E402
+from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name, flac_tags, track_file_name  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
-from domain.lyrics import lrc_path_for, lrc_text, lyrics_tag  # noqa: E402
+from domain.lyrics import Lyrics, line_index_at, lrc_path_for, lrc_text, lyrics_tag, parse_lrc  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
     RipKind,
@@ -33,7 +26,8 @@ from domain.rip import (  # noqa: E402
     safe_filename,
     unique_name,
 )
-from dvdplayer import lrclib, musicbrainz  # noqa: E402
+from dvdplayer import lrclib  # noqa: E402
+from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
 from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
@@ -82,10 +76,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._audio_spans: list[tuple[int, int, int]] = []
         self._cd_mode = False
         self._cd_track: int | None = None
-        self._cd_album: AlbumInfo | None = None
-        self._cd_lookup = ""  # "pending", "found" or "missing"
-        self._cd_lookup_gen = 0  # results from an earlier disc are dropped
+        self._cd_info = CdInfo(self._on_cd_info_changed)
         self._album_listener = None  # set while the rip dialog is open
+        self._lyrics_lines: list[tuple[int, str]] = []
+        self._lyrics_index = -2  # line currently shown; -2 forces a redraw
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -183,6 +177,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._video.add_controller(click)
 
         self._cd_page = Adw.StatusPage(icon_name="media-optical-cd-audio-symbolic", vexpand=True)
+        self._cd_page.set_child(self._build_lyrics_view())
         self._media_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
         self._media_stack.add_named(self._video, "video")
         self._media_stack.add_named(self._cd_page, "cd")
@@ -195,6 +190,28 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._empty_page, "empty")
         self._stack.add_named(player_box, "player")
         return self._stack
+
+    def _build_lyrics_view(self) -> Gtk.Widget:
+        self._lyrics_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vhomogeneous=False)
+        synced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self._lyric_labels = []
+        for css in ("dim-label", "title-2", "dim-label"):
+            label = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=48)
+            label.add_css_class(css)
+            synced.append(label)
+            self._lyric_labels.append(label)
+        self._lyrics_stack.add_named(synced, "synced")
+        self._plain_lyrics = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, selectable=True)
+        self._lyrics_stack.add_named(
+            Gtk.ScrolledWindow(
+                child=self._plain_lyrics, min_content_height=240, hscrollbar_policy=Gtk.PolicyType.NEVER
+            ),
+            "plain",
+        )
+        self._lyrics_note = Gtk.Label()
+        self._lyrics_note.add_css_class("dim-label")
+        self._lyrics_stack.add_named(self._lyrics_note, "note")
+        return self._lyrics_stack
 
     def _build_controls(self) -> Gtk.Widget:
         bar = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=8, margin_end=8)
@@ -226,6 +243,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._subs_dd = Gtk.DropDown(tooltip_text="Subtitles", valign=Gtk.Align.CENTER)
         self._subs_dd.connect("notify::selected", self._on_subs_selected)
         bar.append(self._subs_dd)
+        self._lyrics_btn = Gtk.ToggleButton(
+            icon_name="media-view-subtitles-symbolic", tooltip_text="Lyrics (L)", active=True, visible=False
+        )
+        self._lyrics_btn.add_css_class("flat")
+        self._lyrics_btn.set_valign(Gtk.Align.CENTER)
+        self._lyrics_btn.connect("toggled", lambda b: self._lyrics_stack.set_visible(b.get_active()))
+        bar.append(self._lyrics_btn)
 
         self._volume = Gtk.ScaleButton.new(
             0,
@@ -309,41 +333,22 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_empty_page("No audio tracks", "The disc's table of contents couldn't be read.")
             return
         self._set_cd_mode(True)
-        self._cd_album = blank_album([s[0] for s in self._audio_spans])
-        self._start_cd_lookup(tracks, leadout)
+        self._cd_info.load(self._drive, tracks, leadout, self._audio_spans)
         self._build_cd_rows()
         self._loaded = True
         self._stack.set_visible_child_name("player")
         self._play_cd_track(self._audio_spans[0][0])
 
-    def _start_cd_lookup(self, tracks, leadout: int) -> None:
-        self._cd_lookup_gen += 1
-        gen, self._cd_lookup = self._cd_lookup_gen, "pending"
-        disc_id = musicbrainz_disc_id(tracks[0].number, tracks[-1].number, leadout, [t.start_lba for t in tracks])
-        barcode, count = self._drive.mcn(), len(self._audio_spans)
-
-        def work() -> None:
-            info = musicbrainz.lookup(disc_id, barcode, count)
-            GLib.idle_add(self._on_cd_lookup_done, gen, info)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _on_cd_lookup_done(self, gen: int, info: AlbumInfo | None) -> bool:
-        if gen != self._cd_lookup_gen or not self._cd_mode:
-            return False
-        self._cd_lookup = "found" if info else "missing"
-        if info:
-            self._set_cd_album(info)
-        if self._album_listener:
-            self._album_listener()
-        return False
-
-    def _set_cd_album(self, info: AlbumInfo) -> None:
-        self._cd_album = info
-        for row, (number, _, _) in zip(self._title_rows, self._audio_spans, strict=False):
-            row.set_title(f"{number}. {info.track(number).title}")
+    def _on_cd_info_changed(self) -> None:
+        """New names or lyrics for the current disc (from cache, CD-Text, the network or the user)."""
+        album = self._cd_info.album
+        if album is not None and self._cd_info.named:
+            for row, (number, _, _) in zip(self._title_rows, self._audio_spans, strict=False):
+                row.set_title(f"{number}. {album.track(number).title}")
         if self._cd_track is not None:
             self._show_cd_track(self._cd_track)
+        if self._album_listener:
+            self._album_listener()
 
     def _set_cd_mode(self, on: bool) -> None:
         self._cd_mode = on
@@ -354,13 +359,15 @@ class MainWindow(Adw.ApplicationWindow):
         # Audio CDs have a single stereo stream and no subtitles.
         self._audio_dd.set_visible(not on)
         self._subs_dd.set_visible(not on)
+        self._lyrics_btn.set_visible(on)
         self._prev_btn.set_tooltip_text("Previous track" if on else "Previous chapter")
         self._next_btn.set_tooltip_text("Next track" if on else "Next chapter")
 
     def _build_cd_rows(self) -> None:
         self._clear_title_rows()
         for number, start, end in self._audio_spans:
-            title = f"{number}. {self._cd_album.track(number).title}" if self._cd_album else f"Track {number}"
+            named = self._cd_info.named and self._cd_info.album is not None
+            title = f"{number}. {self._cd_info.album.track(number).title}" if named else f"Track {number}"
             row = Adw.ActionRow(title=title, subtitle=format_duration(end - start), activatable=True)
             row.connect("activated", lambda _r, n=number: self._play_cd_track(n))
             marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
@@ -381,9 +388,10 @@ class MainWindow(Adw.ApplicationWindow):
     def _show_cd_track(self, number: int) -> None:
         span = self._cd_span(number)
         total = len(self._audio_spans)
-        found = self._cd_lookup in ("found", "edited") and self._cd_album is not None
-        track = self._cd_album.track(number) if found else TrackInfo(number, f"Track {number}")
-        album = f"{self._cd_album.title} · {track.artist or self._cd_album.artist}" if found else self._disc_label
+        info = self._cd_info.album
+        found = self._cd_info.named and info is not None
+        track = info.track(number) if found else TrackInfo(number, f"Track {number}")
+        album = f"{info.title} · {track.artist or info.artist}" if found else self._disc_label
         self._cd_page.set_title(track.title)
         self._cd_page.set_description(
             f"{album} · track {number} of {total}" + (f" · {format_duration(span[2] - span[1])}" if span else "")
@@ -391,6 +399,31 @@ class MainWindow(Adw.ApplicationWindow):
         for n, marker in self._title_markers.items():
             marker.set_opacity(1 if n == number else 0)
         self._window_title.set_subtitle(f"{album} · {track.title}")
+        self._show_lyrics(number)
+
+    def _show_lyrics(self, number: int) -> None:
+        lyrics: Lyrics | None = self._cd_info.lyrics(number)
+        self._lyrics_lines = parse_lrc(lyrics.synced) if lyrics and lyrics.synced else []
+        self._lyrics_index = -2
+        if self._lyrics_lines:
+            self._lyrics_stack.set_visible_child_name("synced")
+            self._update_lyric_line(self._player.time_ms())
+        elif lyrics and lyrics.plain:
+            self._plain_lyrics.set_label(lyrics.plain)
+            self._lyrics_stack.set_visible_child_name("plain")
+        else:
+            searching = self._cd_info.resolving or (self._cd_info.named and number not in self._cd_info.known_lyrics())
+            self._lyrics_note.set_label("Looking for lyrics…" if searching else "")
+            self._lyrics_stack.set_visible_child_name("note")
+
+    def _update_lyric_line(self, now_ms: int) -> None:
+        index = line_index_at(self._lyrics_lines, now_ms)
+        if index == self._lyrics_index:
+            return
+        self._lyrics_index = index
+        for offset, label in zip((-1, 0, 1), self._lyric_labels, strict=True):
+            i = index + offset
+            label.set_label(self._lyrics_lines[i][1] if 0 <= i < len(self._lyrics_lines) else "")
 
     def _skip_back(self) -> None:
         if not self._cd_mode:
@@ -424,6 +457,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._seek.set_range(0, max(length, 1))
         if time.monotonic() > self._seek_hold_until:
             self._seek.set_value(now)
+        if self._lyrics_lines:
+            self._update_lyric_line(now)
 
     def _unload_disc(self) -> None:
         if self._loaded:
@@ -434,8 +469,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._titles, self._disc_info = [], []
         self._last_position = None
         self._audio_spans = []
-        self._cd_album, self._cd_lookup = None, ""
-        self._cd_lookup_gen += 1
+        self._cd_info.clear()
+        self._lyrics_lines = []
         self._rip_options = RipOptions((), "No disc")
         self._rip_btn.set_sensitive(False)
         self._clear_title_rows()
@@ -678,11 +713,11 @@ class MainWindow(Adw.ApplicationWindow):
         def on_start(*_):
             _, kind, index = choices[what.get_selected()]
             want_lyrics = False
-            if album_form and kind is RipKind.AUDIO_TRACKS:
-                self._cd_lookup = "edited"
-                album, want_lyrics = album_form[1]()
-                self._set_cd_album(album)
+            self._album_listener = None
             dialog.close()
+            if album_form and kind is RipKind.AUDIO_TRACKS:
+                album, want_lyrics = album_form[1]()
+                self._cd_info.set_album(album)
             self._start_rip(kind, index, current_folder(), want_lyrics)
 
         start.connect("clicked", on_start)
@@ -701,7 +736,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _album_form(self):
         """Editable album/track fields for an audio CD rip: (groups, read_values)."""
-        info = self._cd_album or blank_album([s[0] for s in self._audio_spans])
+        info = self._cd_info.album
         album_group = Adw.PreferencesGroup(title="Album")
         album_row = Adw.EntryRow(title="Album")
         artist_row = Adw.EntryRow(title="Artist")
@@ -719,7 +754,7 @@ class MainWindow(Adw.ApplicationWindow):
         for number, _, _ in self._audio_spans:
             track_rows[number] = Adw.EntryRow(title=f"Track {number}")
             tracks_group.add(track_rows[number])
-        state = {"edited": False, "filling": False}
+        state = {"edited": False, "filling": False, "named": self._cd_info.named}
 
         def fill(src: AlbumInfo) -> None:
             state["filling"] = True
@@ -735,28 +770,31 @@ class MainWindow(Adw.ApplicationWindow):
                 state["edited"] = True
 
         def show_status() -> None:
-            album_group.set_description(
-                {
-                    "pending": "Looking up the disc on MusicBrainz…",
-                    "found": "Found on MusicBrainz. Edit anything before ripping.",
-                    "edited": "Saved into the FLAC tags and file names.",
-                }.get(self._cd_lookup, "Not found online: type the details in.")
-            )
+            if self._cd_info.resolving:
+                text = "Looking up the disc (CD-Text, then MusicBrainz)…"
+            else:
+                text = {
+                    SOURCE_EDITED: "Your earlier edits for this disc. Change anything before ripping.",
+                    SOURCE_CD_TEXT: "From the disc's own CD-Text. Edit anything before ripping.",
+                    SOURCE_MUSICBRAINZ: "Found on MusicBrainz. Edit anything before ripping.",
+                }.get(self._cd_info.source, "Not found on the disc or online: type the details in.")
+            album_group.set_description(text + " Edits are remembered for this disc.")
 
-        def on_lookup_done() -> None:
-            # Don't overwrite what the user already typed while the lookup was running.
-            if self._cd_lookup == "found" and not state["edited"]:
-                fill(self._cd_album)
+        def on_info_changed() -> None:
+            # Fill once when names arrive, and never over what the user already typed.
+            if self._cd_info.named and not state["named"] and not state["edited"]:
+                fill(self._cd_info.album)
+            state["named"] = self._cd_info.named
             show_status()
 
         fill(info)
         show_status()
         for row in (album_row, artist_row, year_row, *track_rows.values()):
             row.connect("changed", on_changed)
-        self._album_listener = on_lookup_done
+        self._album_listener = on_info_changed
 
         def read() -> tuple[AlbumInfo, bool]:
-            current = self._cd_album or info
+            current = self._cd_info.album or info
             artist = artist_row.get_text().strip() or "Unknown Artist"
             tracks = []
             for number, row in track_rows.items():
@@ -793,7 +831,7 @@ class MainWindow(Adw.ApplicationWindow):
             what, self._rip_dest = f"Ripping {title.label if title else 'title'}", Path(out)
             steps = [(dvd_title_command(device, title_index + 1, out), title.duration_ms if title else 0)]
         elif kind is RipKind.AUDIO_TRACKS:
-            info = self._cd_album or blank_album([s[0] for s in self._audio_spans])
+            info = self._cd_info.album
             album = Path(free(album_folder_name(info)))
             album.mkdir()
             total = len(self._audio_spans)
@@ -806,7 +844,7 @@ class MainWindow(Adw.ApplicationWindow):
             spans = list(self._audio_spans)
             steps = audio_track_commands(device, spans, outputs)
             if want_lyrics:
-                steps = self._with_lyrics(device, info, spans, outputs)
+                steps = self._with_lyrics(device, info, spans, outputs, self._cd_info.known_lyrics())
         else:
             out = free(f"{base}.iso")
             job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
@@ -827,14 +865,17 @@ class MainWindow(Adw.ApplicationWindow):
             job.start(steps)
 
     @staticmethod
-    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs):
-        """Rip preparation run on the job thread: fetch lyrics, write .lrc files, add LYRICS tags."""
+    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs, known: dict[int, Lyrics | None]):
+        """Rip preparation run on the job thread: fetch missing lyrics, write .lrc files, add LYRICS tags."""
 
         def prepare(status):
             for i, (number, start, end) in enumerate(spans, start=1):
-                status(f"fetching lyrics {i}/{len(spans)}…")
                 track = info.track(number)
-                lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
+                if number in known:
+                    lyrics = known[number]  # already cached; no network
+                else:
+                    status(f"fetching lyrics {i}/{len(spans)}…")
+                    lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
                 if lyrics is None:
                     continue
                 path, tags = outputs[number]
@@ -917,6 +958,8 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_key(self, _ctrl, keyval: int, _keycode: int, _state) -> bool:
         if keyval == Gdk.KEY_space:
             self._player.toggle_pause()
+        elif keyval in (Gdk.KEY_l, Gdk.KEY_L) and self._cd_mode:
+            self._lyrics_btn.set_active(not self._lyrics_btn.get_active())
         elif keyval in (Gdk.KEY_f, Gdk.KEY_F, Gdk.KEY_F11):
             self._toggle_fullscreen()
         elif keyval == Gdk.KEY_Escape and self.is_fullscreen():

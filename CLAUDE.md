@@ -9,21 +9,24 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - **Solution**: one window — drive panel + title/chapter list on the left, embedded video on the right; disc menus skipped.
 - **v1 features**: embedded playback (play/pause/seek/volume/fullscreen), title & chapter picker with real lengths,
   drive status/eject/close tray with auto-detect on insert, audio/subtitle track switching.
-- **Audio CDs**: track list in the sidebar, auto-play from track 1, auto-advance, prev/next track. Album/track names
-  looked up on MusicBrainz (disc ID, then the disc's barcode/MCN — most discs here have no CD-Text), editable in the
-  Rip dialog; rips go to `<Album>/NN - Title.flac` with tags (artist only in tags, by choice). Optional lyrics from
-  LRCLIB: plain text in the FLAC `LYRICS` tag + synced `NN - Title.lrc` beside it; instrumentals skipped.
+- **Audio CDs**: track list in the sidebar, auto-play from track 1, auto-advance, prev/next track. Album/track names:
+  user edits > disc CD-Text > MusicBrainz (disc ID, then barcode/MCN), editable in the Rip dialog. Synced lyrics
+  (LRCLIB) shown under the track while playing (toggle: L). Everything cached per disc ID in
+  `~/.cache/dvd-player/cd/<discid>.json`; misses retried after 7 days. Rips go to `<Album>/NN - Title.flac`
+  with tags (artist only in tags, by choice); optional lyrics: plain in the FLAC `LYRICS` tag + synced `.lrc`
+  beside it; instrumentals skipped.
+- **DVD subtitles**: only the disc's own tracks (dropdown); nothing is fetched for DVDs.
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
 - **Engagement**: utility, used whenever a disc is played. Personal, non-commercial, not distributed. English UI.
-- **UI**: libadwaita, forced dark (video app). Keys: Space, F/F11, Esc, ←/→ seek 10 s, ↑/↓ volume.
+- **UI**: libadwaita, forced dark (video app). Keys: Space, F/F11, Esc, ←/→ seek 10 s, ↑/↓ volume, L lyrics (CD).
 
 ## Stack & architecture
 - Python 3 + GTK4/libadwaita (system PyGObject), libvlc via `python-vlc` in `.venv` (created with `--system-site-packages`).
 - Chosen over the Tauri desktop default: tiny local tool, GTK/libadwaita already installed, no build step.
-- `domain/` — pure stdlib: CD track navigation (`cd.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching (`lyrics.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
+- `domain/` — pure stdlib: CD track navigation (`cd.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), cache rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
   rip rules + ffmpeg command building (`rip.py`).
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `lrclib.py`, `player.py` (libvlc),
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `lrclib.py`, `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
 - Ripping uses system `ffmpeg` (`dvdvideo` demuxer) and `cd-paranoia` (libcdio-paranoia) for audio CDs, piped into
   ffmpeg for FLAC, one pipeline per track (the single-pass segment muxer writes wrong FLAC lengths). Not ffmpeg's
@@ -41,6 +44,7 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Run: `./run.sh` · Test: `.venv/bin/python -m pytest` · Lint: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 
 ## Progress
-- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip.
+- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
-- Next (ideas): remember last position; CD-Text as an offline source; show synced lyrics during CD playback.
+- Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
+- Next (ideas): remember last position.

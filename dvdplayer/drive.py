@@ -117,6 +117,17 @@ class Drive:
         digits = raw.split(b"\0", 1)[0].decode("ascii", "replace")
         return digits if digits.isdigit() and digits.strip("0") else ""
 
+    def cd_info_report(self) -> str:
+        """libcdio's disc report, which includes any CD-Text (~3 s: it reads the disc)."""
+        try:
+            return subprocess.run(
+                ["cd-info", "--no-header", "--no-device-info", "--no-disc-mode", "--no-ioctl", "--no-vcd", "-q",
+                 self.device],
+                capture_output=True, text=True, errors="replace", timeout=30,
+            ).stdout  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
     def size_bytes(self) -> int:
         try:
             return int((Path("/sys/block") / Path(self.device).name / "size").read_text()) * 512
