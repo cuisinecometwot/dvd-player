@@ -46,15 +46,17 @@ rips work.
 
 **All distributions:** a DVD drive. It is found automatically (`/dev/sr0`, `/dev/sr1`, …).
 
-**Windows (experimental, untested)**
+**Windows 10/11, 64-bit (experimental)**
 
 Download the installer or the portable zip from the
-[pre-releases](https://github.com/cuisinecometwot/dvd-player/releases). Everything is bundled (GTK, VLC with
-libdvdcss, FFmpeg, cd-paranoia), so nothing else needs installing. The exe is not signed, so SmartScreen will
-warn: choose *More info → Run anyway*. The drive is found by its letter (pass `D:` to pick one); an open tray
-shows as "No disc". Cached album info lives in `%LOCALAPPDATA%\dvd-player`; uninstalling (*Settings → Apps*) offers to
-delete it too. Your rips are never touched. For the portable zip, delete the folder and that cache folder. The build is made by
-`.github/workflows/windows-release.yml` on GitHub's Windows runners (MSYS2 + PyInstaller + Inno Setup).
+[pre-releases](https://github.com/cuisinecometwot/dvd-player/releases). On Windows the app has a native
+interface (Qt) and everything is bundled (VLC with libdvdcss, a minimal FFmpeg, cd-paranoia), so nothing else
+needs installing. The exe is not signed, so SmartScreen will warn: choose *More info → Run anyway*. The drive is
+found by its letter (pass `D:` to pick one); an open tray shows as "No disc". Cached album info lives in
+`%LOCALAPPDATA%\dvd-player`; uninstalling (*Settings → Apps*) offers to delete it too. Your rips are never
+touched. For the portable zip, delete the folder and that cache folder. The build is made by
+`.github/workflows/windows-release.yml` on GitHub's Windows runners, which also check that the bundled FFmpeg runs
+the app's rip commands, that the bundled VLC plays the results, and that the packaged exe starts.
 
 ## Install and run
 
@@ -145,7 +147,9 @@ Bug reports and pull requests are welcome.
 ```
 
 The rules (track navigation, metadata, lyrics timing, rip commands, album folders) live in `domain/`, plain
-Python with unit tests; GTK, VLC and the drive are in `dvdplayer/`.
+Python with unit tests. `dvdplayer/session.py` runs the app (drive, player, files, rips) for either UI:
+`dvdplayer/gtkui/` (GTK 4 / libadwaita, Linux) and `dvdplayer/qtui/` (Qt, Windows). To try the Qt UI on Linux:
+`.venv/bin/pip install PySide6-Essentials` and `./run.sh --qt`.
 
 ## License
 

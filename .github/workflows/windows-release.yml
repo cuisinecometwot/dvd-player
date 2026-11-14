@@ -1,6 +1,9 @@
 # Builds the experimental Windows version (installer + portable zip) and publishes it as a pre-release.
 # Trigger: push a tag like v0.2.0-windows-experimental.1. Pushes to feature/windows (or a manual run) build and
 # test the same way but only upload the files as a workflow artifact, without a release.
+#
+# The app runs on python.org Python with PySide6's official Qt (native Windows look, uses Windows' own ICU).
+# MSYS2 is only the toolchain for the minimal FFmpeg and the source of cd-paranoia/cd-info.
 name: Windows build
 
 on:
@@ -13,6 +16,8 @@ permissions:
   contents: write
 
 env:
+  PYTHON_VERSION: "3.13"
+  PYSIDE_VERSION: 6.12.0
   VLC_VERSION: 3.0.24
   FFMPEG_VERSION: 8.1.3
   # Full static FFmpeg, only to generate test files for the smoke tests; never bundled.
@@ -24,18 +29,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
           install: zip unzip make diffutils
           pacboy: >-
-            python:p python-gobject:p python-pip:p python-pytest:p gtk4:p libadwaita:p adwaita-icon-theme:p
-            pyinstaller:p pyinstaller-hooks-contrib:p libcdio:p libcdio-paranoia:p
-            toolchain:p nasm:p pkgconf:p libdvdnav:p libdvdread:p opus:p zlib:p
+            toolchain:p nasm:p pkgconf:p libdvdnav:p libdvdread:p opus:p zlib:p libcdio:p libcdio-paranoia:p
 
       - name: Version
-        shell: msys2 {0}
+        shell: bash
         run: |
           tag="${GITHUB_REF_NAME}"
           [ "${GITHUB_REF_TYPE}" = tag ] || tag="dev-${GITHUB_SHA::7}"
@@ -44,9 +52,10 @@ jobs:
           echo "NUM_VERSION=${num:-0.0.0}" >> "$GITHUB_ENV"
 
       - name: Python packages and domain tests
-        shell: msys2 {0}
+        shell: bash
         run: |
-          python -m pip install --break-system-packages python-vlc
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller "PySide6-Essentials==${PYSIDE_VERSION}" python-vlc pytest
           python -m pytest -q tests
 
       - name: Cache minimal FFmpeg
@@ -66,7 +75,7 @@ jobs:
           sh packaging/windows/build-ffmpeg.sh "ffmpeg-${FFMPEG_VERSION}" "$PWD/ffmin" 2>&1 | grep -vE '^(CC|AR|LD|STRIP|INSTALL|GEN|X86ASM|HOSTCC|HOSTLD|BIN2C|GZIP|MINIFY)\b'
 
       - name: Build app with PyInstaller
-        shell: msys2 {0}
+        shell: bash
         run: pyinstaller --noconfirm packaging/windows/dvdplayer.spec
 
       - name: Bundle FFmpeg, cd-paranoia and cd-info with their DLLs
@@ -94,17 +103,40 @@ jobs:
           "vlc-${VLC_VERSION}/vlc-cache-gen.exe" dist/DvdPlayer/vlc/plugins || echo "::warning::vlc-cache-gen failed"
           du -sh dist/DvdPlayer/vlc
           cp LICENSE README.md dist/DvdPlayer/
-
-      - name: Smoke tests (bundled FFmpeg runs the app's commands, bundled VLC plays the results)
-        shell: msys2 {0}
-        run: |
           curl -fsSL -o fixture-ffmpeg.zip \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FIXTURE_FFMPEG_ZIP}.zip"
           unzip -q fixture-ffmpeg.zip -d fixture
+
+      - name: Smoke tests (bundled FFmpeg runs the app's commands, bundled VLC plays the results)
+        shell: bash
+        run: |
+          set -o pipefail
           ISOLATE=1 python packaging/windows/smoke_ffmpeg.py dist/DvdPlayer/bin \
             "fixture/${FIXTURE_FFMPEG_ZIP}/bin/ffmpeg.exe" smoke-rips
-          python packaging/windows/smoke_vlc.py dist/DvdPlayer/vlc smoke-rips
-          du -sh dist/DvdPlayer dist/DvdPlayer/*/
+          # The runner has no sound device, hence VLC's audio-output errors.
+          python packaging/windows/smoke_vlc.py dist/DvdPlayer/vlc smoke-rips 2>&1 | grep -v "failed to create audio output"
+
+      - name: Startup test (the packaged exe starts, loads Qt and libvlc, and logs no crash)
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:TEMP "dvd-player-logs"
+          Remove-Item $logs -Recurse -Force -ErrorAction SilentlyContinue
+          $app = Start-Process -FilePath "dist\DvdPlayer\DvdPlayer.exe" -PassThru
+          Start-Sleep -Seconds 15
+          $alive = -not $app.HasExited
+          if ($alive) { Stop-Process -Id $app.Id -Force }
+          $log = Get-ChildItem $logs -Filter *.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+          if (-not $log) { Write-Error "no log file: the exe failed before logging (exit code $($app.ExitCode))"; exit 1 }
+          $text = Get-Content $log.FullName -Raw
+          Write-Output $text
+          $missing = @("ui=qt", "libvlc ", "drive status") | Where-Object { -not $text.Contains($_) }
+          if (-not $alive) { Write-Error "the app exited by itself (code $($app.ExitCode))"; exit 1 }
+          if ($missing) { Write-Error "log lacks: $($missing -join ', ')"; exit 1 }
+          if ($text.Contains("CRITICAL")) { Write-Error "uncaught exception logged"; exit 1 }
+
+      - name: Sizes
+        shell: bash
+        run: du -sh dist/DvdPlayer dist/DvdPlayer/*/ | sort -h
 
       - name: Portable zip
         shell: msys2 {0}
