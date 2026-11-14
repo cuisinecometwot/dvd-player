@@ -35,7 +35,7 @@ so others may try it; `README.md` is the user-facing guide.
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
 - **Engagement**: utility, used whenever a disc is played. Non-commercial; built for the owner first, but the repo is
-  public (github.com/cuisinecometwot/dvd-player, no license chosen yet), so features must also make sense to strangers
+  public (github.com/cuisinecometwot/dvd-player, MIT license), so features must also make sense to strangers
   and be explained in `README.md`. English UI.
 - **UI**: libadwaita, forced dark (video app). Keys: Space, F/F11, Esc, ←/→ seek 10 s, ↑/↓ volume, L lyrics (CD).
 

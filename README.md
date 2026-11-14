@@ -110,3 +110,7 @@ Bug reports and pull requests are welcome.
 
 The rules (track navigation, metadata, lyrics timing, rip commands, album folders) live in `domain/`, plain
 Python with unit tests; GTK, VLC and the drive are in `dvdplayer/`.
+
+## License
+
+[MIT](LICENSE)
