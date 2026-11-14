@@ -10,7 +10,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from domain.cd import track_after, track_before  # noqa: E402
 from domain.cdcache import (  # noqa: E402
@@ -56,6 +57,18 @@ EMPTY_PAGES = {
 }
 
 
+LYRICS_CSS = """
+.lyric-current { font-size: 26pt; font-weight: 800; }
+.lyric-side { font-size: 15pt; opacity: 0.5; }
+.lyric-plain { font-size: 15pt; }
+"""
+
+
+def _text_height(label: Gtk.Label, lines: int) -> int:
+    """Pixel height of `lines` lines in the label's current font (styles apply once it is mapped)."""
+    return label.create_pango_layout("\n".join(["Ag漢"] * lines)).get_pixel_size()[1]
+
+
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application, device: str | None):
         super().__init__(application=app, title="DVD Player", default_width=1180, default_height=720)
@@ -95,6 +108,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._frame_lock = threading.Lock()
         self._pending_frame = None
 
+        css = Gtk.CssProvider()
+        css.load_from_string(LYRICS_CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         self._build_ui()
         self.connect("close-request", self._on_close)
         self.connect("notify::fullscreened", self._on_fullscreen_changed)
@@ -230,23 +248,20 @@ class MainWindow(Adw.ApplicationWindow):
         return self._stack
 
     def _build_cd_page(self) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER)
+        """Cover filling the free space, big lyrics under it; track details live in the window title."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
         for side in ("top", "bottom", "start", "end"):
             getattr(box, f"set_margin_{side}")(24)
-        self._cover_picture = Gtk.Picture(halign=Gtk.Align.CENTER, visible=False)
+        self._cover_picture = Gtk.Picture(content_fit=Gtk.ContentFit.FILL, can_shrink=True)
         self._cover_picture.add_css_class("card")
         self._cover_picture.set_overflow(Gtk.Overflow.HIDDEN)
-        self._cd_icon = Gtk.Image(icon_name="media-optical-cd-audio-symbolic", pixel_size=128)
+        # The frame keeps the picture at the image's own shape, so the rounded card hugs the artwork.
+        self._cover_frame = Gtk.AspectFrame(child=self._cover_picture, obey_child=False, vexpand=True, visible=False)
+        self._cd_icon = Gtk.Image(icon_name="media-optical-cd-audio-symbolic", pixel_size=128, vexpand=True)
         self._cd_icon.add_css_class("dim-label")
-        self._cd_title = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
-        self._cd_title.add_css_class("title-1")
-        self._cd_desc = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
-        self._cd_desc.add_css_class("dim-label")
-        for widget in (self._cover_picture, self._cd_icon, self._cd_title, self._cd_desc, self._build_lyrics_view()):
+        for widget in (self._cover_frame, self._cd_icon, self._build_lyrics_view()):
             box.append(widget)
-        page = Gtk.ScrolledWindow(child=Adw.Clamp(child=box, maximum_size=720), vexpand=True)
-        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        return page
+        return box
 
     def _refresh_cover(self) -> None:
         path = self._cd_info.cover_path if self._cd_mode else None
@@ -257,9 +272,12 @@ class MainWindow(Adw.ApplicationWindow):
         if key == self._cover_key:
             return  # lyrics updates also land here; don't decode the image each time
         self._cover_key = key
-        big = load_texture(path, 300, 300) if key else None
+        # Large enough to stay sharp in fullscreen on a HiDPI screen; the picture scales it down.
+        big = load_texture(path, 1600, 1600) if key else None
         self._cover_picture.set_paintable(big)
-        self._cover_picture.set_visible(big is not None)
+        if big is not None:
+            self._cover_frame.set_ratio(big.get_width() / big.get_height())
+        self._cover_frame.set_visible(big is not None)
         self._cd_icon.set_visible(big is None)
         small = load_texture(path, 40, 40) if key else None
         self._disc_thumb.set_paintable(small)
@@ -267,22 +285,24 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_lyrics_view(self) -> Gtk.Widget:
         self._lyrics_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vhomogeneous=False)
-        synced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        synced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._lyric_labels = []
-        for css in ("dim-label", "title-2", "dim-label"):
-            label = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=48)
+        # Previous / current / next. Fixed line counts keep the cover from jumping as lines change length.
+        for css, lines in (("lyric-side", 1), ("lyric-current", 2), ("lyric-side", 1)):
+            label = Gtk.Label(
+                wrap=True, lines=lines, ellipsize=Pango.EllipsizeMode.END, justify=Gtk.Justification.CENTER
+            )
             label.add_css_class(css)
+            label.connect("map", lambda w, n=lines: w.set_size_request(-1, _text_height(w, n)))
             synced.append(label)
             self._lyric_labels.append(label)
         self._lyrics_stack.add_named(synced, "synced")
         self._plain_lyrics = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, selectable=True)
-        self._lyrics_stack.add_named(
-            Gtk.ScrolledWindow(
-                child=self._plain_lyrics, min_content_height=240, hscrollbar_policy=Gtk.PolicyType.NEVER
-            ),
-            "plain",
-        )
-        self._lyrics_note = Gtk.Label()
+        self._plain_lyrics.add_css_class("lyric-plain")
+        plain = Gtk.ScrolledWindow(child=self._plain_lyrics, min_content_height=220)
+        plain.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._lyrics_stack.add_named(plain, "plain")
+        self._lyrics_note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
         self._lyrics_note.add_css_class("dim-label")
         self._lyrics_stack.add_named(self._lyrics_note, "note")
         return self._lyrics_stack
@@ -475,16 +495,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._show_cd_track(number)
 
     def _show_cd_track(self, number: int) -> None:
-        span = self._cd_span(number)
-        total = len(self._audio_spans)
         info = self._cd_info.album
         found = self._cd_info.named and info is not None
         track = info.track(number) if found else TrackInfo(number, f"Track {number}")
         album = f"{info.title} · {track.artist or info.artist}" if found else self._disc_label
-        self._cd_title.set_label(track.title)
-        self._cd_desc.set_label(
-            f"{album} · track {number} of {total}" + (f" · {format_duration(span[2] - span[1])}" if span else "")
-        )
         for n, marker in self._title_markers.items():
             marker.set_opacity(1 if n == number else 0)
         self._window_title.set_subtitle(f"{album} · {track.title}")

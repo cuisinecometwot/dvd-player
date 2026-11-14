@@ -11,7 +11,8 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
   drive status/eject/close tray with auto-detect on insert, audio/subtitle track switching.
 - **Audio CDs**: track list in the sidebar, auto-play from track 1, auto-advance, prev/next track. Album/track names:
   user edits > disc CD-Text > MusicBrainz (disc ID, then barcode/MCN), editable in the Rip dialog. Synced lyrics
-  (LRCLIB) shown under the track while playing (toggle: L). Everything cached per disc ID in
+  (LRCLIB) shown big under the cover while playing (toggle: L); the CD page has only cover + lyrics, track details
+  are in the window title. Everything cached per disc ID in
   `~/.cache/dvd-player/cd/<discid>.json`; misses retried after 7 days. Rips go to `<Album>/NN - Title.flac`
   with tags (artist only in tags, by choice); optional lyrics: plain in the FLAC `LYRICS` tag + synced `.lrc`
   beside it; instrumentals skipped. Optional Opus copies (160 kb/s, for phones) in a sibling `<Album> (Opus)`
