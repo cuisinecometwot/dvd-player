@@ -6,6 +6,7 @@ after the disc changed are dropped (generation counter).
 
 import json
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -40,8 +41,16 @@ from dvdplayer import coverart, lrclib, musicbrainz, net
 from dvdplayer.drive import Drive
 
 
+def app_cache_dir() -> Path:
+    """Everything the app stores; deleting this folder resets it. The Windows uninstaller removes it."""
+    if sys.platform == "win32":
+        # GLib's cache dir on Windows is the Internet Explorer cache (INetCache), not a place for app data.
+        return Path(os.environ.get("LOCALAPPDATA") or GLib.get_user_cache_dir()) / "dvd-player"
+    return Path(GLib.get_user_cache_dir()) / "dvd-player"
+
+
 def cache_dir() -> Path:
-    return Path(GLib.get_user_cache_dir()) / "dvd-player" / "cd"
+    return app_cache_dir() / "cd"
 
 
 def _load(disc_id: str) -> CdRecord | None:

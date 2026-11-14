@@ -52,7 +52,8 @@ Download the installer or the portable zip from the
 [pre-releases](https://github.com/cuisinecometwot/dvd-player/releases). Everything is bundled (GTK, VLC with
 libdvdcss, FFmpeg, cd-paranoia), so nothing else needs installing. The exe is not signed, so SmartScreen will
 warn: choose *More info → Run anyway*. The drive is found by its letter (pass `D:` to pick one); an open tray
-shows as "No disc". Cached album info lives in `%LOCALAPPDATA%\dvd-player`. The build is made by
+shows as "No disc". Cached album info lives in `%LOCALAPPDATA%\dvd-player`; uninstalling (*Settings → Apps*) offers to
+delete it too. Your rips are never touched. For the portable zip, delete the folder and that cache folder. The build is made by
 `.github/workflows/windows-release.yml` on GitHub's Windows runners (MSYS2 + PyInstaller + Inno Setup).
 
 ## Install and run

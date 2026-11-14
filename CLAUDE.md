@@ -66,6 +66,8 @@ so others may try it; `README.md` is the user-facing guide.
   (`.github/workflows/windows-release.yml`, tag `v*-windows*`): MSYS2 UCRT64 + PyInstaller onedir, then VLC zip,
   BtbN FFmpeg and MSYS2 cd-paranoia/cd-info copied beside the exe (`dvdplayer/winsetup.py` wires the paths),
   Inno Setup installer + portable zip, published as a pre-release.
+  Cache on Windows is `%LOCALAPPDATA%\dvd-player` (GLib's cache dir there is INetCache); the uninstaller offers
+  to delete it (rips are never touched). FFmpeg is BtbN's shared build (one set of av*.dll for ffmpeg + ffprobe).
 - Needs `libdvdcss` (RPM Fusion tainted; `libdvd-pkg` on Debian/Ubuntu) for encrypted discs.
 - Distro compat floor: Python 3.12, libadwaita 1.5 (Ubuntu 24.04) — `Adw.Spinner` (1.6) falls back to
   `Gtk.Spinner`. Debian/Ubuntu ship the original `cdparanoia` (same options), used when `cd-paranoia` is missing.

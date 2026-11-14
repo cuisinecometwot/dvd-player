@@ -1,6 +1,7 @@
 """Main window: drive panel + title/chapter list in a sidebar, video and controls in the content area."""
 
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -37,7 +38,7 @@ from domain.rip import (  # noqa: E402
     unique_name,
 )
 from dvdplayer import audiorip  # noqa: E402
-from dvdplayer.cdinfo import CdInfo  # noqa: E402
+from dvdplayer.cdinfo import CdInfo, app_cache_dir  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.images import load_texture  # noqa: E402
 from dvdplayer.localmedia import OpenedAlbum, read_album  # noqa: E402
@@ -210,7 +211,8 @@ class MainWindow(Adw.ApplicationWindow):
             tooltip_text=(
                 "Names, lyrics and covers come from the disc's CD-Text when it has any, otherwise from "
                 "MusicBrainz, LRCLIB and the Cover Art Archive. Only the disc ID, barcode, song titles, "
-                "artist and track lengths are sent. Results are kept in ~/.cache/dvd-player, "
+                "artist and track lengths are sent. Results are kept in "
+                f"{app_cache_dir() if sys.platform == 'win32' else '~/.cache/dvd-player'}, "
                 "so a disc is only looked up once."
             ),
         )

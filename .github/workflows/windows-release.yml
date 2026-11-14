@@ -12,7 +12,7 @@ permissions:
 
 env:
   VLC_VERSION: 3.0.24
-  FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-gpl-8.1
+  FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-gpl-shared-8.1
 
 jobs:
   build:
@@ -67,7 +67,8 @@ jobs:
         run: |
           curl -fsSL -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_ZIP}.zip"
           unzip -q ffmpeg.zip
-          cp "${FFMPEG_ZIP}/bin/ffmpeg.exe" "${FFMPEG_ZIP}/bin/ffprobe.exe" dist/DvdPlayer/bin/
+          # Shared build: ffmpeg and ffprobe use one set of av*.dll instead of two static copies (~150 MB less).
+          cp "${FFMPEG_ZIP}/bin/ffmpeg.exe" "${FFMPEG_ZIP}/bin/ffprobe.exe" "${FFMPEG_ZIP}"/bin/*.dll dist/DvdPlayer/bin/
           dist/DvdPlayer/bin/ffmpeg.exe -hide_banner -version | head -1
           if dist/DvdPlayer/bin/ffmpeg.exe -hide_banner -demuxers | grep -q dvdvideo; then
             echo "FFmpeg has the dvdvideo demuxer (DVD title rips work)"
