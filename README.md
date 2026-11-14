@@ -18,17 +18,33 @@ synced lyrics over the album cover, and one-click rips you can play again later 
 
 ## Requirements
 
-Built and tested on **Fedora (GNOME, Wayland)** with Python 3.14. Other distributions should work if they have
-the same packages.
+Built and tested on **Fedora (GNOME, Wayland)** with Python 3.14. Any Linux distribution with Python 3.12+,
+GTK 4 and libadwaita 1.5+ should work.
+
+**Fedora**
 
 ```sh
 sudo dnf install python3-gobject gtk4 libadwaita vlc ffmpeg-free libcdio libcdio-paranoia
 ```
 
-- **Encrypted (CSS) DVDs**, which is most commercial films, need `libdvdcss` from
-  [RPM Fusion](https://rpmfusion.org/) to play. With RPM Fusion Free enabled, add its "tainted" repository:
-  `sudo dnf install rpmfusion-free-release-tainted && sudo dnf install libdvdcss`
-- A DVD drive. It is found automatically (`/dev/sr0`, `/dev/sr1`, …).
+Encrypted (CSS) DVDs, which is most commercial films, need `libdvdcss` from [RPM Fusion](https://rpmfusion.org/).
+With RPM Fusion Free enabled, add its "tainted" repository:
+`sudo dnf install rpmfusion-free-release-tainted && sudo dnf install libdvdcss`
+
+**Debian 13+ / Ubuntu 24.04+** (Debian 12 is too old: its libadwaita is 1.2)
+
+```sh
+sudo apt install python3-venv python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 vlc ffmpeg libcdio-utils cdparanoia
+```
+
+For encrypted DVDs, install `libdvd-pkg` (Debian: `contrib` repository; Ubuntu: `multiverse`), which downloads
+and builds `libdvdcss`: `sudo apt install libdvd-pkg && sudo dpkg-reconfigure libdvd-pkg`
+
+Ripping a DVD title to MKV needs an FFmpeg 7.0+ build with its `dvdvideo` input; check with
+`ffmpeg -hide_banner -demuxers | grep dvdvideo`. Ubuntu 24.04 ships FFmpeg 6.1, so there only audio CD and ISO
+rips work.
+
+**All distributions:** a DVD drive. It is found automatically (`/dev/sr0`, `/dev/sr1`, …).
 
 ## Install and run
 

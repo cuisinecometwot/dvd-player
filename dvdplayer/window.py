@@ -214,7 +214,10 @@ class MainWindow(Adw.ApplicationWindow):
                 "so a disc is only looked up once."
             ),
         )
-        self._online_spinner = Adw.Spinner(visible=False)
+        # Adw.Spinner needs libadwaita 1.6; Ubuntu 24.04 ships 1.5.
+        self._online_spinner = (
+            Adw.Spinner(visible=False) if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True, visible=False)
+        )
         self._online_icon = Gtk.Image(icon_name="emblem-ok-symbolic")
         self._online_row.add_prefix(self._online_spinner)
         self._online_row.add_prefix(self._online_icon)
