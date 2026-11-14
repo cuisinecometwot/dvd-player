@@ -1,6 +1,7 @@
 """Main window: drive panel + title/chapter list in a sidebar, video and controls in the content area."""
 
 import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -18,21 +19,21 @@ from domain.cdcache import (  # noqa: E402
     SOURCE_EDITED,
     SOURCE_MUSICBRAINZ,
 )
-from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name, flac_tags, track_file_name  # noqa: E402
+from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
-from domain.lyrics import Lyrics, line_index_at, lrc_path_for, lrc_text, lyrics_tag, parse_lrc  # noqa: E402
+from domain.lyrics import Lyrics, line_index_at, parse_lrc  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
+    OPUS_BITRATE_KBPS,
     RipKind,
     RipOptions,
-    audio_track_commands,
     audio_track_spans,
     dvd_title_command,
     rip_options,
     safe_filename,
     unique_name,
 )
-from dvdplayer import lrclib, net  # noqa: E402
+from dvdplayer import audiorip  # noqa: E402
 from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.images import load_texture  # noqa: E402
@@ -80,6 +81,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._rip_options = RipOptions((), "No disc")
         self._rip_job: RipJob | None = None
         self._rip_dest: Path | None = None
+        self._rip_work_dir: Path | None = None  # temp files for the running rip (Opus metadata)
+        self._want_opus = False  # remembered between rips in this session
         self._audio_spans: list[tuple[int, int, int]] = []
         self._cd_mode = False
         self._cd_track: int | None = None
@@ -811,7 +814,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._album_listener = None
             dialog.close()
             if album_form and kind is RipKind.AUDIO_TRACKS:
-                album, want_lyrics = album_form[1]()
+                album, want_lyrics, self._want_opus = album_form[1]()
                 self._cd_info.set_album(album)
             self._start_rip(kind, index, current_folder(), want_lyrics)
 
@@ -844,6 +847,13 @@ class MainWindow(Adw.ApplicationWindow):
             active=True,
         )
         album_group.add(lyrics_row)
+        opus_row = Adw.SwitchRow(
+            title="Also make Opus copies",
+            subtitle=f"Small files for phones: Opus {OPUS_BITRATE_KBPS} kb/s (≈1.2 MB/min, sounds the same), "
+            "with tags, lyrics and cover, in a separate “(Opus)” folder. The FLACs stay lossless.",
+            active=self._want_opus,
+        )
+        album_group.add(opus_row)
         cover_row = Adw.ActionRow(title="Cover")
         cover_thumb = Gtk.Picture(valign=Gtk.Align.CENTER)
         cover_thumb.add_css_class("card")
@@ -934,7 +944,7 @@ class MainWindow(Adw.ApplicationWindow):
             row.connect("changed", on_changed)
         self._album_listener = on_info_changed
 
-        def read() -> tuple[AlbumInfo, bool]:
+        def read() -> tuple[AlbumInfo, bool, bool]:
             current = self._cd_info.album or info
             artist = artist_row.get_text().strip() or "Unknown Artist"
             tracks = []
@@ -949,7 +959,7 @@ class MainWindow(Adw.ApplicationWindow):
                 year=year_row.get_text().strip(),
                 tracks=tuple(tracks),
             )
-            return album, lyrics_row.get_active()
+            return album, lyrics_row.get_active(), opus_row.get_active()
 
         return [album_group, tracks_group], read
 
@@ -975,19 +985,18 @@ class MainWindow(Adw.ApplicationWindow):
             info = self._cd_info.album
             album = Path(free(album_folder_name(info)))
             album.mkdir()
-            total = len(self._audio_spans)
-            outputs = {
-                n: (str(album / track_file_name(info, n)), flac_tags(info, n, total)) for n, _, _ in self._audio_spans
-            }
-            flacs = [path for path, _ in outputs.values()]
+            opus_dir = Path(free(f"{album.name} (Opus)")) if self._want_opus else None
+            if opus_dir:
+                opus_dir.mkdir()
+            self._rip_work_dir = Path(tempfile.mkdtemp(prefix="dvd-player-rip-"))
             cover = self._copy_cover(album)
-            extras = [lrc_path_for(p) for p in flacs] + ([cover] if cover else [])
-            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, flacs + extras)
-            what, self._rip_dest = f"Ripping {total} tracks", album
-            spans = list(self._audio_spans)
-            steps = audio_track_commands(device, spans, outputs, cover)
-            if want_lyrics:
-                steps = self._with_lyrics(device, info, spans, outputs, self._cd_info.known_lyrics(), cover)
+            steps, partial = audiorip.plan(
+                device, info, list(self._audio_spans), album, cover, self._cd_info.known_lyrics(),
+                want_lyrics, opus_dir, self._rip_work_dir,
+            )  # fmt: skip
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, partial)
+            copies = " + Opus" if opus_dir else ""
+            what, self._rip_dest = f"Ripping {len(self._audio_spans)} tracks{copies}", album
         else:
             out = free(f"{base}.iso")
             job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
@@ -1006,41 +1015,6 @@ class MainWindow(Adw.ApplicationWindow):
             job.start(device, out, self._drive.size_bytes())
         else:
             job.start(steps)
-
-    @staticmethod
-    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs, known: dict[int, Lyrics | None], cover: str):
-        """Rip preparation run on the job thread: fetch missing lyrics, write .lrc files, add LYRICS tags."""
-
-        def prepare(status):
-            offline = False
-            for i, (number, start, end) in enumerate(spans, start=1):
-                track = info.track(number)
-                if number in known:
-                    lyrics = known[number]  # already cached; no network
-                elif offline:
-                    continue
-                else:
-                    status(f"fetching lyrics {i}/{len(spans)}…")
-                    try:
-                        lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
-                    except net.NetworkError:
-                        offline = True  # rip without lyrics rather than wait on every track
-                        continue
-                if lyrics is None:
-                    continue
-                path, tags = outputs[number]
-                outputs[number] = (path, [*tags, *lyrics_tag(lyrics)])
-                if lyrics.synced:
-                    try:
-                        Path(lrc_path_for(path)).write_text(
-                            lrc_text(lyrics.synced, track.title, track.artist or info.artist, info.title),
-                            encoding="utf-8",
-                        )
-                    except OSError:
-                        pass  # lyrics are a bonus; never fail the rip over them
-            return audio_track_commands(device, spans, outputs, cover)
-
-        return prepare
 
     def _copy_cover(self, album: Path) -> str:
         """cover.jpg/png in the album folder (what music players look for); "" when there is none."""
@@ -1065,6 +1039,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_rip_done(self, ok: bool, message: str) -> bool:
         self._rip_job = None
+        if self._rip_work_dir is not None:
+            shutil.rmtree(self._rip_work_dir, ignore_errors=True)
+            self._rip_work_dir = None
         self._rip_group.set_visible(False)
         self._set_busy(False)
         self._rip_btn.set_sensitive(self._status is DriveStatus.DISC_OK and not self._load_pending)

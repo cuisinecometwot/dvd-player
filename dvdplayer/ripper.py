@@ -13,8 +13,11 @@ from gi.repository import GLib
 from domain.rip import Pipeline, eta_text, parse_progress_line, progress_fraction
 
 ProgressHandler = Callable[[float, str], None]
+# (pipeline, duration_ms) or (pipeline, duration_ms, weight): weight scales a step's share of the progress bar
+# for steps much faster than real time (encoding a file vs. reading the disc).
+Step = tuple[Pipeline, int] | tuple[Pipeline, int, float]
 # Runs on the worker thread before any ffmpeg starts (e.g. network lookups); gets a status-text callback.
-Prepare = Callable[[Callable[[str], None]], list[tuple[Pipeline, int]]]
+Prepare = Callable[[Callable[[str], None]], list[Step]]
 DoneHandler = Callable[[bool, str], None]
 IMAGE_CHUNK = 2048 * 512  # 1 MiB, a whole number of DVD sectors
 PROGRESS_INTERVAL_S = 0.25
@@ -57,7 +60,7 @@ class FfmpegJob(RipJob):
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
 
-    def start(self, steps: list[tuple[Pipeline, int]] | Prepare) -> None:
+    def start(self, steps: list[Step] | Prepare) -> None:
         """Run (pipeline, duration_ms) steps in order; progress spans all of them."""
         threading.Thread(target=self._run, args=(steps,), daemon=True).start()
 
@@ -69,24 +72,25 @@ class FfmpegJob(RipJob):
         for proc in procs:
             _stop(proc)
 
-    def _run(self, steps: list[tuple[Pipeline, int]] | Prepare) -> None:
+    def _run(self, steps: list[Step] | Prepare) -> None:
         if callable(steps):
             steps = steps(lambda text: GLib.idle_add(self._on_progress, 0.0, text))
             if self._cancelled.is_set():
                 self._finish(False, "Rip cancelled")
                 return
-        total = sum(duration for _, duration in steps)
-        done_before = 0
-        for pipeline, duration in steps:
-            error = self._run_one(pipeline, done_before, total)
+        weighted = [(step[0], step[1], step[2] if len(step) > 2 else 1.0) for step in steps]
+        total = sum(duration * weight for _, duration, weight in weighted)
+        done_before = 0.0
+        for pipeline, duration, weight in weighted:
+            error = self._run_one(pipeline, done_before, total, weight)
             if error is not None:
                 self._finish(False, error)
                 return
-            done_before += duration
+            done_before += duration * weight
         self._report(1.0, force=True)
         self._finish(True, "Rip finished")
 
-    def _run_one(self, pipeline: Pipeline, done_before: int, total: int) -> str | None:
+    def _run_one(self, pipeline: Pipeline, done_before: float, total: float, weight: float) -> str | None:
         procs: list[subprocess.Popen] = []
         stderr_tails: list[tuple[list[str], threading.Thread]] = []
         try:
@@ -113,10 +117,13 @@ class FfmpegJob(RipJob):
             return f"Couldn't start {e.filename or pipeline[0][0]}: {e.strerror or e}"
 
         ffmpeg = procs[-1]
+        furthest = 0
         for line in ffmpeg.stdout:
             done_ms = parse_progress_line(line)
             if done_ms is not None:
-                self._report(progress_fraction(done_before + done_ms, total))
+                # Never step back: with an attached cover picture ffmpeg's final report says 0.
+                furthest = max(furthest, done_ms)
+                self._report(progress_fraction(done_before + furthest * weight, total))
         for proc in procs:
             proc.wait()
         with self._procs_lock:

@@ -1,13 +1,19 @@
+import base64
+import struct
+
 from domain.cdmeta import (
     AlbumInfo,
     TrackInfo,
     album_folder_name,
     blank_album,
     cover_extension,
+    ffmetadata,
     flac_tags,
     musicbrainz_disc_id,
     parse_release,
+    picture_block,
     track_file_name,
+    track_tags,
 )
 
 
@@ -91,3 +97,26 @@ def test_cover_extension():
     assert cover_extension("a.b.png") == ".png"
     assert cover_extension("scan.webp") is None
     assert cover_extension("noext") is None
+
+
+def test_ffmetadata_escapes_special_characters():
+    text = ffmetadata({"title": "a=b;c#d\\e", "LYRICS": "one\ntwo"})
+    assert text == ";FFMETADATA1\ntitle=a\\=b\;c\\#d\\\\e\nLYRICS=one\\\ntwo\n"
+
+
+def test_picture_block_layout():
+    raw = base64.b64decode(picture_block(b"JPEGDATA", "image/jpeg", 672, 1200))
+    kind, mime_len = struct.unpack(">II", raw[:8])
+    assert (kind, raw[8 : 8 + mime_len]) == (3, b"image/jpeg")
+    rest = raw[8 + mime_len :]
+    (desc_len,) = struct.unpack(">I", rest[:4])
+    width, height, depth, colors, size = struct.unpack(">IIIII", rest[4 + desc_len : 24 + desc_len])
+    assert (width, height, size) == (672, 1200, 8) and rest[24 + desc_len :] == b"JPEGDATA"
+
+
+def test_track_tags_and_opus_name():
+    info = AlbumInfo("Album", "Band", tracks=(TrackInfo(1, "Song"),))
+    assert track_tags(info, 1, 6) == {
+        "title": "Song", "artist": "Band", "album": "Album", "album_artist": "Band", "track": "1", "TRACKTOTAL": "6",
+    }  # fmt: skip
+    assert track_file_name(info, 1, ".opus") == "01 - Song.opus"

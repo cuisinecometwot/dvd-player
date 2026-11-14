@@ -111,6 +111,20 @@ def audio_track_commands(
     ]  # fmt: skip
 
 
+OPUS_BITRATE_KBPS = 160  # transparent for practically everyone; ~1.2 MB per minute
+# Encoding a track to Opus takes ~1/20 of the time reading it off the CD does; weights the progress bar.
+OPUS_PROGRESS_WEIGHT = 0.05
+
+
+def opus_command(source: str, metadata_file: str, output: str, bitrate_kbps: int = OPUS_BITRATE_KBPS) -> Pipeline:
+    """Opus copy of a ripped FLAC. Tags (and the cover, as METADATA_BLOCK_PICTURE) come from an ffmetadata
+    file because ffmpeg can't mux a picture stream into Ogg and the encoded picture is too long for argv."""
+    return [[
+        *_FFMPEG, "-i", source, "-i", metadata_file,
+        "-map", "0:a", "-map_metadata", "1", "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", output,
+    ]]  # fmt: skip
+
+
 _FFMPEG = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats"]
 
 
@@ -122,7 +136,7 @@ def parse_progress_line(line: str) -> int | None:
     return None
 
 
-def progress_fraction(done: int, total: int) -> float:
+def progress_fraction(done: float, total: float) -> float:
     return 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
 
 

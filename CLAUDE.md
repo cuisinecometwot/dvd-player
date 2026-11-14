@@ -14,7 +14,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
   (LRCLIB) shown under the track while playing (toggle: L). Everything cached per disc ID in
   `~/.cache/dvd-player/cd/<discid>.json`; misses retried after 7 days. Rips go to `<Album>/NN - Title.flac`
   with tags (artist only in tags, by choice); optional lyrics: plain in the FLAC `LYRICS` tag + synced `.lrc`
-  beside it; instrumentals skipped.
+  beside it; instrumentals skipped. Optional Opus copies (160 kb/s, for phones) in a sibling `<Album> (Opus)`
+  folder, encoded from the fresh FLACs (disc read once), with tags + lyrics + cover (METADATA_BLOCK_PICTURE via
+  an ffmetadata file: ffmpeg can't mux a picture stream into Ogg, and the base64 is too long for argv).
 - **Cover art**: CDs hold none; front cover from the Cover Art Archive via the MusicBrainz release (so CD-Text/typed
   albums get none unless the user picks a JPEG/PNG in the Rip dialog — user's pick is never replaced). Shown on the
   CD page + sidebar thumbnail; on rip, embedded in each FLAC and saved as `cover.jpg/png`.
@@ -32,7 +34,7 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Chosen over the Tauri desktop default: tiny local tool, GTK/libadwaita already installed, no build step.
 - `domain/` — pure stdlib: CD track navigation (`cd.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), cache + cover rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
   rip rules + ffmpeg command building (`rip.py`).
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `images.py` (scaled textures), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `images.py` (scaled textures), `audiorip.py` (lyrics/tags/FLAC/Opus rip plan), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
 - Ripping uses system `ffmpeg` (`dvdvideo` demuxer) and `cd-paranoia` (libcdio-paranoia) for audio CDs, piped into
   ffmpeg for FLAC, one pipeline per track (the single-pass segment muxer writes wrong FLAC lengths). Not ffmpeg's

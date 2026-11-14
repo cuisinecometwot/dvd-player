@@ -6,6 +6,7 @@ from domain.rip import (
     audio_track_spans,
     dvd_title_command,
     eta_text,
+    opus_command,
     parse_progress_line,
     progress_fraction,
     rip_options,
@@ -60,6 +61,13 @@ def test_audio_track_commands_embed_cover():
     assert "attached_pic" in encoder and encoder[-1] == "01.flac"
     [((_, plain), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])})
     assert "-map" not in plain
+
+
+def test_opus_command():
+    [cmd] = opus_command("01.flac", "1.ffmeta", "01.opus")
+    assert cmd[cmd.index("-map_metadata") + 1] == "1"  # tags + cover come from the metadata file
+    assert cmd[cmd.index("-c:a") + 1] == "libopus" and cmd[cmd.index("-b:a") + 1] == "160k"
+    assert ["-map", "0:a"] == cmd[cmd.index("-map") : cmd.index("-map") + 2] and cmd[-1] == "01.opus"
 
 
 def test_dvd_title_command():

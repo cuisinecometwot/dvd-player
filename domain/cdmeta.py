@@ -2,6 +2,8 @@
 
 import base64
 import hashlib
+import re
+import struct
 from dataclasses import dataclass, field, replace
 
 from domain.rip import safe_filename
@@ -89,11 +91,12 @@ def album_folder_name(info: AlbumInfo) -> str:
     return safe_filename(info.title, "Unknown Album")
 
 
-def track_file_name(info: AlbumInfo, number: int) -> str:
-    return f"{number:02d} - {safe_filename(info.track(number).title, f'Track {number:02d}')}.flac"
+def track_file_name(info: AlbumInfo, number: int, extension: str = ".flac") -> str:
+    return f"{number:02d} - {safe_filename(info.track(number).title, f'Track {number:02d}')}{extension}"
 
 
-def flac_tags(info: AlbumInfo, number: int, total: int) -> list[str]:
+def track_tags(info: AlbumInfo, number: int, total: int) -> dict[str, str]:
+    """Tag name -> value for one track, as ffmpeg names them (empty values left out)."""
     track = info.track(number)
     tags = {
         "title": track.title,
@@ -105,8 +108,42 @@ def flac_tags(info: AlbumInfo, number: int, total: int) -> list[str]:
         "track": str(number),
         "TRACKTOTAL": str(total),
     }
+    return {key: value for key, value in tags.items() if value}
+
+
+def metadata_args(tags: dict[str, str]) -> list[str]:
     args: list[str] = []
     for key, value in tags.items():
-        if value:
-            args += ["-metadata", f"{key}={value}"]
+        args += ["-metadata", f"{key}={value}"]
     return args
+
+
+def flac_tags(info: AlbumInfo, number: int, total: int) -> list[str]:
+    return metadata_args(track_tags(info, number, total))
+
+
+_FFMETADATA_SPECIAL = re.compile(r"([=;#\\\n])")
+
+
+def _ffmetadata_escape(text: str) -> str:
+    return _FFMETADATA_SPECIAL.sub(lambda m: "\\" + m.group(1), text)
+
+
+def ffmetadata(tags: dict[str, str]) -> str:
+    """ffmpeg's metadata-file format; used when a value (an embedded picture) is too long for argv."""
+    lines = [f"{_ffmetadata_escape(k)}={_ffmetadata_escape(v)}\n" for k, v in tags.items()]
+    return ";FFMETADATA1\n" + "".join(lines)
+
+
+PICTURE_FRONT_COVER = 3
+
+
+def picture_block(data: bytes, mime: str, width: int, height: int, description: str = "Cover (front)") -> str:
+    """Base64 FLAC PICTURE block: how Ogg/Opus files carry cover art (METADATA_BLOCK_PICTURE tag)."""
+    mime_b, desc_b = mime.encode("ascii"), description.encode("utf-8")
+    block = (
+        struct.pack(">II", PICTURE_FRONT_COVER, len(mime_b)) + mime_b
+        + struct.pack(">I", len(desc_b)) + desc_b
+        + struct.pack(">IIIII", width, height, 24, 0, len(data)) + data
+    )  # fmt: skip
+    return base64.b64encode(block).decode("ascii")
