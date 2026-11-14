@@ -666,6 +666,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         if not self._cd_mode:
             self._sync_position()
+        self._player.sync_volume()
         playing = self._player.is_playing()
         self._play_btn.set_icon_name("media-playback-pause-symbolic" if playing else "media-playback-start-symbolic")
         if self._ticks % 4 == 0 and not self._cd_mode:

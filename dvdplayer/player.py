@@ -32,6 +32,8 @@ class Player:
         self._buf_lock = threading.Lock()
         self._buf = None
         self._width = self._height = self._stride = 0
+        self._volume = 100
+        self._volume_pending = False
 
         # Keep references: ctypes callbacks are freed if garbage-collected while VLC still holds them.
         self._format_raw = _FormatCb(self._setup_format)
@@ -68,6 +70,10 @@ class Player:
 
     def open(self, mrl: str) -> None:
         self._mp.set_media(self._instance.media_new(mrl))
+        self._play_new_media()
+
+    def _play_new_media(self) -> None:
+        self._volume_pending = self._volume != 100  # a new output starts at full volume
         self._mp.play()
 
     def open_cd_track(self, device: str, track: int) -> None:
@@ -75,7 +81,7 @@ class Player:
         # Without a track option VLC treats the CD as a playlist, which a bare MediaPlayer won't walk.
         media.add_option(f":cdda-track={track}")
         self._mp.set_media(media)
-        self._mp.play()
+        self._play_new_media()
 
     def is_ended(self) -> bool:
         return self._mp.get_state() == vlc.State.Ended
@@ -109,10 +115,19 @@ class Player:
         self._mp.set_time(int(ms))
 
     def volume(self) -> int:
-        return max(0, self._mp.audio_get_volume())
+        return self._volume
 
     def set_volume(self, percent: int) -> None:
-        self._mp.audio_set_volume(int(percent))
+        self._volume, self._volume_pending = int(percent), True
+        self.sync_volume()
+
+    def sync_volume(self) -> None:
+        """Apply a volume change once audio is flowing: VLC's PipeWire output segfaults if set earlier,
+        including while the state already says Playing but the clock hasn't started."""
+        state = self._mp.get_state()
+        if self._volume_pending and state in (vlc.State.Playing, vlc.State.Paused) and self._mp.get_time() > 0:
+            self._mp.audio_set_volume(self._volume)
+            self._volume_pending = False
 
     def titles(self) -> list[Title]:
         try:
