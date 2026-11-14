@@ -47,7 +47,7 @@ Type: filesandordirs; Name: "{app}"
 // Rips are the user's own files and are never touched; only the app's cache (album info, covers, lyrics).
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Cache, OldCache: String;
+  Cache, OldCache, Msg: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     exit;
@@ -56,8 +56,10 @@ begin
   OldCache := ExpandConstant('{localappdata}\Microsoft\Windows\INetCache\dvd-player');
   if not (DirExists(Cache) or DirExists(OldCache)) then
     exit;
-  if UninstallSilent or (MsgBox('Also delete saved album info, covers and lyrics?' + #13#10 + #13#10 + Cache +
-      #13#10 + #13#10 + 'Your ripped files are not affected.', mbConfirmation, MB_YESNO) = IDYES) then
+  // No line may start with '#' here: ISPP would read it as a preprocessor directive.
+  Msg := 'Also delete saved album info, covers and lyrics?' + #13#10#13#10 + Cache + #13#10#13#10 +
+    'Your ripped files are not affected.';
+  if UninstallSilent or (MsgBox(Msg, mbConfirmation, MB_YESNO) = IDYES) then
   begin
     DelTree(Cache, True, True, True);
     DelTree(OldCache, True, True, True);
