@@ -83,25 +83,46 @@ def dvd_title_command(device: str, title_number: int, output: str) -> Pipeline:
 
 
 def audio_track_commands(
-    device: str, spans: list[tuple[int, int, int]], output_pattern: str
+    device: str, spans: list[tuple[int, int, int]], outputs: dict[int, tuple[str, list[str]]], cover: str = ""
 ) -> list[tuple[Pipeline, int]]:
     """One cd-paranoia | ffmpeg pipeline per track, so every FLAC gets a correct header.
 
     Returns (pipeline, duration_ms) pairs. cd-paranoia does the reading because ffmpeg's libcdio
     demuxer spins forever once a read comes within a fraction of a second of the lead-out,
-    i.e. on every disc's last track. output_pattern is formatted with the track number.
+    i.e. on every disc's last track. outputs maps track number -> (output path, extra ffmpeg args
+    such as -metadata tags). cover, if given, is embedded as the FLAC front-cover picture.
     """
+    picture = (
+        ["-i", cover, "-map", "0:a", "-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic",
+         "-metadata:s:v", "comment=Cover (front)"]
+        if cover else []
+    )  # fmt: skip
     return [
         (
             [
                 ["cd-paranoia", "--force-cdrom-device", device, "--disable-paranoia", "--quiet",
                  "--output-wav", f"{number}-{number}", "-"],
-                [*_FFMPEG, "-f", "wav", "-i", "pipe:0", "-c:a", "flac", output_pattern.format(number)],
+                [*_FFMPEG, "-f", "wav", "-i", "pipe:0", *picture, "-c:a", "flac", *outputs[number][1],
+                 outputs[number][0]],
             ],
             end_ms - start_ms,
         )
         for number, start_ms, end_ms in spans
     ]  # fmt: skip
+
+
+OPUS_BITRATE_KBPS = 160  # transparent for practically everyone; ~1.2 MB per minute
+# Encoding a track to Opus takes ~1/20 of the time reading it off the CD does; weights the progress bar.
+OPUS_PROGRESS_WEIGHT = 0.05
+
+
+def opus_command(source: str, metadata_file: str, output: str, bitrate_kbps: int = OPUS_BITRATE_KBPS) -> Pipeline:
+    """Opus copy of a ripped FLAC. Tags (and the cover, as METADATA_BLOCK_PICTURE) come from an ffmetadata
+    file because ffmpeg can't mux a picture stream into Ogg and the encoded picture is too long for argv."""
+    return [[
+        *_FFMPEG, "-i", source, "-i", metadata_file,
+        "-map", "0:a", "-map_metadata", "1", "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", output,
+    ]]  # fmt: skip
 
 
 _FFMPEG = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats"]
@@ -115,7 +136,7 @@ def parse_progress_line(line: str) -> int | None:
     return None
 
 
-def progress_fraction(done: int, total: int) -> float:
+def progress_fraction(done: float, total: float) -> float:
     return 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
 
 

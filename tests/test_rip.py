@@ -6,6 +6,7 @@ from domain.rip import (
     audio_track_spans,
     dvd_title_command,
     eta_text,
+    opus_command,
     parse_progress_line,
     progress_fraction,
     rip_options,
@@ -40,14 +41,33 @@ def test_audio_track_spans_skip_data_tracks():
 
 
 def test_audio_track_commands_one_per_track():
-    cmds = audio_track_commands("/dev/sr0", [(1, 0, 60_000), (2, 60_000, 90_500)], "Track {:02d}.flac")
+    cmds = audio_track_commands(
+        "/dev/sr0",
+        [(1, 0, 60_000), (2, 60_000, 90_500)],
+        {1: ("01.flac", []), 2: ("02.flac", ["-metadata", "title=B"])},
+    )
     assert [d for _, d in cmds] == [60_000, 30_500]
     (reader, encoder), _ = cmds[1]
     # cd-paranoia reads the whole track itself: ffmpeg's libcdio demuxer hangs at the lead-out.
     assert reader[0] == "cd-paranoia" and "2-2" in reader and reader[-1] == "-"
     assert reader[reader.index("--force-cdrom-device") + 1] == "/dev/sr0"
     assert encoder[0] == "ffmpeg" and "pipe:0" in encoder and "libcdio" not in encoder
-    assert encoder[-1] == "Track 02.flac"
+    assert encoder[-3:] == ["-metadata", "title=B", "02.flac"]
+
+
+def test_audio_track_commands_embed_cover():
+    [((_, encoder), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])}, "cover.jpg")
+    assert encoder[encoder.index("pipe:0") + 1 : encoder.index("pipe:0") + 3] == ["-i", "cover.jpg"]
+    assert "attached_pic" in encoder and encoder[-1] == "01.flac"
+    [((_, plain), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])})
+    assert "-map" not in plain
+
+
+def test_opus_command():
+    [cmd] = opus_command("01.flac", "1.ffmeta", "01.opus")
+    assert cmd[cmd.index("-map_metadata") + 1] == "1"  # tags + cover come from the metadata file
+    assert cmd[cmd.index("-c:a") + 1] == "libopus" and cmd[cmd.index("-b:a") + 1] == "160k"
+    assert ["-map", "0:a"] == cmd[cmd.index("-map") : cmd.index("-map") + 2] and cmd[-1] == "01.opus"
 
 
 def test_dvd_title_command():

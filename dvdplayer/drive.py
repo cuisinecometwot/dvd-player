@@ -24,6 +24,7 @@ CDROM_DRIVE_STATUS = 0x5326
 CDROM_DISC_STATUS = 0x5327
 CDROMREADTOCHDR = 0x5305
 CDROMREADTOCENTRY = 0x5306
+CDROM_GET_MCN = 0x5311
 DVD_READ_STRUCT = 0x5390
 CDSL_CURRENT = 0x7FFFFFFF
 CDROM_LBA = 0x01
@@ -106,6 +107,26 @@ class Drive:
             return tracks[:-1], tracks[-1].start_lba
         except (OSError, struct.error, ValueError):
             return [], 0
+
+    def mcn(self) -> str:
+        """Media Catalog Number: the album's 13-digit EAN/UPC barcode, or "" when the disc has none."""
+        try:
+            raw = self._ioctl(CDROM_GET_MCN, bytes(14))
+        except OSError:
+            return ""
+        digits = raw.split(b"\0", 1)[0].decode("ascii", "replace")
+        return digits if digits.isdigit() and digits.strip("0") else ""
+
+    def cd_info_report(self) -> str:
+        """libcdio's disc report, which includes any CD-Text (~3 s: it reads the disc)."""
+        try:
+            return subprocess.run(
+                ["cd-info", "--no-header", "--no-device-info", "--no-disc-mode", "--no-ioctl", "--no-vcd", "-q",
+                 self.device],
+                capture_output=True, text=True, errors="replace", timeout=30,
+            ).stdout  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            return ""
 
     def size_bytes(self) -> int:
         try:
