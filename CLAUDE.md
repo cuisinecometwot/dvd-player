@@ -1,7 +1,8 @@
 # DVD Player
 
 Small native GNOME app to play DVDs from the external USB drive (auto-detected `/dev/sr*`; it can come back as `sr1` after a USB replug) and manage the drive.
-Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland). The repo is public on GitHub,
+Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland); Debian 13+/Ubuntu 24.04+
+supported on a best-effort basis (untested on real installs). Windows would be a port (see Next). The repo is public on GitHub,
 so others may try it; `README.md` is the user-facing guide.
 
 ## Product
@@ -58,7 +59,9 @@ so others may try it; `README.md` is the user-facing guide.
 - Volume is applied only once the playback clock runs: libvlc's PipeWire output segfaults on `audio_set_volume`
   before that (even while the state already says Playing).
 - libvlc reports 0 length for DVD titles via `dvdsimple://`, so lengths/aspect come from the IFO files instead.
-- Needs `libdvdcss` (RPM Fusion tainted) for encrypted discs.
+- Needs `libdvdcss` (RPM Fusion tainted; `libdvd-pkg` on Debian/Ubuntu) for encrypted discs.
+- Distro compat floor: Python 3.12, libadwaita 1.5 (Ubuntu 24.04) — `Adw.Spinner` (1.6) falls back to
+  `Gtk.Spinner`. Debian/Ubuntu ship the original `cdparanoia` (same options), used when `cd-paranoia` is missing.
 
 ## Dev
 - Keep `README.md` in sync when user-visible features, keys, requirements or online lookups change.
@@ -69,4 +72,5 @@ so others may try it; `README.md` is the user-facing guide.
 - Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache; cover art; playing ripped albums/videos from disk; README.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
-- Next (ideas): remember last position.
+- Next (ideas): remember last position; verify on a Debian 13 / Ubuntu 24.04 VM; Windows port (needs a
+  `DeviceIoControl` drive backend, a CD reader without cd-paranoia, MSYS2 GTK packaging).

@@ -1,5 +1,6 @@
 """Plan for ripping an audio CD: lyrics, tags, one FLAC per track, optional Opus copies for phones."""
 
+import shutil
 from pathlib import Path
 
 import gi
@@ -19,6 +20,11 @@ from domain.lyrics import Lyrics, lrc_path_for, lrc_text  # noqa: E402
 from domain.rip import OPUS_PROGRESS_WEIGHT, audio_track_commands, opus_command  # noqa: E402
 from dvdplayer import lrclib, net  # noqa: E402
 from dvdplayer.ripper import Prepare, Step  # noqa: E402
+
+
+def _paranoia() -> str:
+    """Fedora ships libcdio's cd-paranoia; Debian/Ubuntu usually only have the original cdparanoia."""
+    return "cd-paranoia" if shutil.which("cd-paranoia") or not shutil.which("cdparanoia") else "cdparanoia"
 
 
 def _opus_picture(cover: str) -> str:
@@ -61,7 +67,7 @@ def plan(
         if want_lyrics:
             _add_lyrics(status, info, spans, known_lyrics, tags, lrc_dirs)
         outputs = {n: (flac[n], metadata_args(tags[n])) for n, _, _ in spans}
-        rips = audio_track_commands(device, spans, outputs, cover)
+        rips = audio_track_commands(device, spans, outputs, cover, _paranoia())
         if not opus_dir:
             return rips
         picture = _opus_picture(cover)

@@ -102,3 +102,8 @@ def test_unique_name():
     assert unique_name("b.mkv", taken.__contains__) == "b.mkv"
     assert unique_name("a.mkv", taken.__contains__) == "a (3).mkv"
     assert unique_name("folder", taken.__contains__) == "folder (2)"
+
+
+def test_audio_track_commands_can_use_original_cdparanoia():
+    [((reader, _), _)] = audio_track_commands("/dev/sr1", [(1, 0, 1000)], {1: ("01.flac", [])}, reader="cdparanoia")
+    assert reader[0] == "cdparanoia" and "1-1" in reader
