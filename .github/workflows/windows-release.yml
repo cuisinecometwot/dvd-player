@@ -1,0 +1,121 @@
+# Builds the experimental Windows version (installer + portable zip) and publishes it as a pre-release.
+# Trigger: push a tag like v0.2.0-windows-experimental.1 (or run manually for a build without a release).
+name: Windows build
+
+on:
+  push:
+    tags: ["v*-windows*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VLC_VERSION: 3.0.24
+  FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-gpl-8.1
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: zip unzip
+          pacboy: >-
+            python:p python-gobject:p python-pip:p python-pytest:p gtk4:p libadwaita:p adwaita-icon-theme:p
+            pyinstaller:p pyinstaller-hooks-contrib:p libcdio:p libcdio-paranoia:p
+
+      - name: Version
+        shell: msys2 {0}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = tag ] || tag="dev-${GITHUB_SHA::7}"
+          num=$(echo "$tag" | sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "NUM_VERSION=${num:-0.0.0}" >> "$GITHUB_ENV"
+
+      - name: Python packages and domain tests
+        shell: msys2 {0}
+        run: |
+          python -m pip install --break-system-packages python-vlc
+          python -m pytest -q tests
+
+      - name: Build app with PyInstaller
+        shell: msys2 {0}
+        run: pyinstaller --noconfirm packaging/windows/dvdplayer.spec
+
+      - name: Bundle cd-paranoia and cd-info
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist/DvdPlayer/bin
+          for t in cd-paranoia cd-info; do
+            if [ -f "/ucrt64/bin/$t.exe" ]; then
+              cp "/ucrt64/bin/$t.exe" dist/DvdPlayer/bin/
+              ldd "/ucrt64/bin/$t.exe" | awk '$3 ~ /^\/ucrt64\// {print $3}' | xargs -r cp -n -t dist/DvdPlayer/bin/
+            else
+              echo "::warning::$t.exe not found in MSYS2; audio CD ripping or CD-Text will not work"
+            fi
+          done
+          ls dist/DvdPlayer/bin
+
+      - name: Bundle FFmpeg
+        shell: msys2 {0}
+        run: |
+          curl -fsSL -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_ZIP}.zip"
+          unzip -q ffmpeg.zip
+          cp "${FFMPEG_ZIP}/bin/ffmpeg.exe" "${FFMPEG_ZIP}/bin/ffprobe.exe" dist/DvdPlayer/bin/
+          dist/DvdPlayer/bin/ffmpeg.exe -hide_banner -version | head -1
+          if dist/DvdPlayer/bin/ffmpeg.exe -hide_banner -demuxers | grep -q dvdvideo; then
+            echo "FFmpeg has the dvdvideo demuxer (DVD title rips work)"
+          else
+            echo "::warning::bundled FFmpeg lacks the dvdvideo demuxer; DVD title rips will fail"
+          fi
+
+      - name: Bundle VLC (libvlc + plugins, includes libdvdcss)
+        shell: msys2 {0}
+        run: |
+          curl -fsSL -o vlc.zip "https://download.videolan.org/pub/videolan/vlc/${VLC_VERSION}/win64/vlc-${VLC_VERSION}-win64.zip"
+          unzip -q vlc.zip
+          mkdir -p dist/DvdPlayer/vlc
+          cp -r "vlc-${VLC_VERSION}"/libvlc.dll "vlc-${VLC_VERSION}"/libvlccore.dll "vlc-${VLC_VERSION}"/plugins dist/DvdPlayer/vlc/
+          cp LICENSE README.md dist/DvdPlayer/
+
+      - name: Portable zip
+        shell: msys2 {0}
+        run: |
+          cd dist && zip -qr "../DvdPlayer-${TAG}-windows-portable.zip" DvdPlayer
+          ls -la ../*.zip
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$env:TAG" "/DNumVersion=$env:NUM_VERSION" `
+            "/DSourceDir=$env:GITHUB_WORKSPACE\dist\DvdPlayer" "/DOutputName=DvdPlayer-$env:TAG-windows-setup" `
+            packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "packaging\windows\Output\DvdPlayer-$env:TAG-windows-setup.exe" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DvdPlayer-${{ env.TAG }}-windows
+          path: |
+            DvdPlayer-*-windows-portable.zip
+            DvdPlayer-*-windows-setup.exe
+          retention-days: 14
+
+      - name: Publish pre-release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:TAG `
+            "DvdPlayer-$env:TAG-windows-setup.exe" "DvdPlayer-$env:TAG-windows-portable.zip" `
+            --prerelease --title "Windows build (experimental) $env:TAG" `
+            --notes-file packaging/windows/release-notes.md

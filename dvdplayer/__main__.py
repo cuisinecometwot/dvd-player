@@ -1,8 +1,12 @@
-"""Entry point: python -m dvdplayer [device]  (default: first /dev/sr* found)"""
+"""Entry point: python -m dvdplayer [device]  (default: first drive found; /dev/sr0 on Linux, D: on Windows)"""
 
 import sys
 
-import gi
+from dvdplayer import winsetup
+
+winsetup.configure()
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from domain.library import LocalAlbum, Probe, audio_files, build_album, find_cover, local_lyrics, lrc_name
 from domain.lyrics import Lyrics
+from dvdplayer.proc import NO_WINDOW
 
 PROBE_TIMEOUT_S = 15
 
@@ -30,6 +31,7 @@ def probe(path: Path) -> Probe:
             capture_output=True,
             timeout=PROBE_TIMEOUT_S,
             check=True,
+            **NO_WINDOW,
         ).stdout  # fmt: skip
         data = json.loads(out)
         fmt = data.get("format", {})
@@ -53,6 +55,7 @@ def _embedded_cover(track: Path, work_dir: Path) -> Path | None:
             capture_output=True,
             timeout=PROBE_TIMEOUT_S,
             check=True,
+            **NO_WINDOW,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError):
         return None

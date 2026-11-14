@@ -455,7 +455,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._region_row.set_subtitle(Drive.region_text(mount) if mount else "Unknown")
         self._disc_info = Drive.title_info(mount) if mount else []
         # dvdsimple skips the disc menu; titles are picked from the sidebar instead.
-        self._player.open(f"dvdsimple://{self._drive.device}")
+        self._player.open(f"dvdsimple://{self._drive.vlc_path}")
         self._loaded = True
         self._autoplay_main = True
         self._stack.set_visible_child_name("player")
@@ -564,7 +564,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self._local_album is not None:
             self._player.open(self._local_album.path(number).as_uri())
         else:
-            self._player.open_cd_track(self._drive.device, number)
+            self._player.open_cd_track(self._drive.vlc_path, number)
         self._show_cd_track(number)
 
     def _show_cd_track(self, number: int) -> None:
@@ -1242,7 +1242,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._rip_bar.set_fraction(0)
         self._rip_group.set_visible(True)
         if isinstance(job, ImageJob):
-            job.start(device, out, self._drive.size_bytes())
+            job.start(self._drive.raw_path, out, self._drive.size_bytes())
         else:
             job.start(steps)
 

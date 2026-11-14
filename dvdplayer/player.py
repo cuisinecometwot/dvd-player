@@ -1,6 +1,7 @@
 """libvlc wrapper that renders video into memory so GTK4 can draw it (works on Wayland)."""
 
 import ctypes
+import sys
 import threading
 from collections.abc import Callable
 
@@ -9,6 +10,8 @@ import vlc
 from domain.media import Chapter, Title, Track, display_aspect
 
 TITLE_FLAG_MENU = 0x1
+# --no-xlib only exists in Linux builds; libvlc refuses to start on an unknown option.
+_VLC_ARGS = ("--quiet", "--no-xlib") if sys.platform.startswith("linux") else ("--quiet",)
 
 # python-vlc types the chroma argument as c_char_p, which makes it read-only; we must write "RV32".
 _FormatCb = ctypes.CFUNCTYPE(
@@ -27,7 +30,7 @@ FrameHandler = Callable[[bytes, int, int, int], None]
 class Player:
     def __init__(self, on_frame: FrameHandler):
         self._on_frame = on_frame
-        self._instance = vlc.Instance("--quiet", "--no-xlib")
+        self._instance = vlc.Instance(*_VLC_ARGS)
         self._mp = self._instance.media_player_new()
         self._buf_lock = threading.Lock()
         self._buf = None

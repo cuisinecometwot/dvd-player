@@ -116,6 +116,16 @@ def audio_track_commands(
     ]  # fmt: skip
 
 
+def through_file(pipeline: Pipeline, wav: str) -> tuple[Pipeline, Pipeline]:
+    """Split a cd-paranoia | ffmpeg pipeline into "read to a WAV file" and "encode that file".
+
+    On Windows cd-paranoia's stdout is in text mode, so piped audio would get CR bytes inserted.
+    """
+    reader, encoder = pipeline
+    i = encoder.index("pipe:0")
+    return [[*reader[:-1], wav]], [[*encoder[:i], wav, *encoder[i + 1 :]]]
+
+
 OPUS_BITRATE_KBPS = 160  # transparent for practically everyone; ~1.2 MB per minute
 # Encoding a track to Opus takes ~1/20 of the time reading it off the CD does; weights the progress bar.
 OPUS_PROGRESS_WEIGHT = 0.05

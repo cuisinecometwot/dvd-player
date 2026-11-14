@@ -1,6 +1,7 @@
 """Plan for ripping an audio CD: lyrics, tags, one FLAC per track, optional Opus copies for phones."""
 
 import shutil
+import sys
 from pathlib import Path
 
 import gi
@@ -17,7 +18,7 @@ from domain.cdmeta import (  # noqa: E402
     track_tags,
 )
 from domain.lyrics import Lyrics, lrc_path_for, lrc_text  # noqa: E402
-from domain.rip import OPUS_PROGRESS_WEIGHT, audio_track_commands, opus_command  # noqa: E402
+from domain.rip import OPUS_PROGRESS_WEIGHT, audio_track_commands, opus_command, through_file  # noqa: E402
 from dvdplayer import lrclib, net  # noqa: E402
 from dvdplayer.ripper import Prepare, Step  # noqa: E402
 
@@ -68,12 +69,18 @@ def plan(
             _add_lyrics(status, info, spans, known_lyrics, tags, lrc_dirs)
         outputs = {n: (flac[n], metadata_args(tags[n])) for n, _, _ in spans}
         rips = audio_track_commands(device, spans, outputs, cover, _paranoia())
-        if not opus_dir:
+        if not opus_dir and sys.platform != "win32":
             return rips
-        picture = _opus_picture(cover)
+        picture = _opus_picture(cover) if opus_dir else ""
         steps: list[Step] = []
         for (number, _, _), (pipeline, duration) in zip(spans, rips, strict=True):
-            steps.append((pipeline, duration))
+            if sys.platform == "win32":
+                read, encode = through_file(pipeline, str(work_dir / f"{number}.wav"))
+                steps += [(read, duration), (encode, duration, OPUS_PROGRESS_WEIGHT)]
+            else:
+                steps.append((pipeline, duration))
+            if not opus_dir:
+                continue
             metadata = work_dir / f"{number}.ffmeta"
             opus_tags = {**tags[number], **({"METADATA_BLOCK_PICTURE": picture} if picture else {})}
             metadata.write_text(ffmetadata(opus_tags), encoding="utf-8")

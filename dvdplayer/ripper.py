@@ -11,6 +11,7 @@ from collections.abc import Callable
 from gi.repository import GLib
 
 from domain.rip import Pipeline, eta_text, parse_progress_line, progress_fraction
+from dvdplayer.proc import NO_WINDOW
 
 ProgressHandler = Callable[[float, str], None]
 # (pipeline, duration_ms) or (pipeline, duration_ms, weight): weight scales a step's share of the progress bar
@@ -22,6 +23,8 @@ DoneHandler = Callable[[bool, str], None]
 IMAGE_CHUNK = 2048 * 512  # 1 MiB, a whole number of DVD sectors
 PROGRESS_INTERVAL_S = 0.25
 KILL_GRACE_S = 3
+# Windows has no SIGPIPE: a reader whose consumer quit just fails its write and exits with an error code.
+_SIGPIPE_EXIT = -signal.SIGPIPE if hasattr(signal, "SIGPIPE") else 0
 
 
 class RipJob:
@@ -105,6 +108,7 @@ class FfmpegJob(RipJob):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=last,
+                        **NO_WINDOW,
                     )
                     if procs:
                         procs[-1].stdout.close()  # only the next process holds the read end now
@@ -132,7 +136,7 @@ class FfmpegJob(RipJob):
             return "Rip cancelled"
         for command, proc, (tail, reader) in zip(pipeline, procs, stderr_tails, strict=True):
             # A reader killed by SIGPIPE only means the process after it gave up first.
-            if proc.returncode not in (0, -signal.SIGPIPE):
+            if proc.returncode not in (0, _SIGPIPE_EXIT):
                 reader.join(1)
                 detail = tail[-1].strip() if tail else f"exit code {proc.returncode}"
                 return f"{command[0]} failed: {detail}"
@@ -178,7 +182,9 @@ class ImageJob(RipJob):
         try:
             with open(device, "rb", buffering=0) as src, open(output, "wb") as dst:
                 while not self._cancelled.is_set():
-                    chunk = src.read(IMAGE_CHUNK)
+                    # A raw Windows volume errors when read past its end instead of returning EOF.
+                    want = min(IMAGE_CHUNK, total_bytes - copied) if total_bytes else IMAGE_CHUNK
+                    chunk = src.read(want) if want > 0 else b""
                     if not chunk:
                         break
                     dst.write(chunk)

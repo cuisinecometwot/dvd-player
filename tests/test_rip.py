@@ -11,6 +11,7 @@ from domain.rip import (
     progress_fraction,
     rip_options,
     safe_filename,
+    through_file,
 )
 
 
@@ -107,3 +108,11 @@ def test_unique_name():
 def test_audio_track_commands_can_use_original_cdparanoia():
     [((reader, _), _)] = audio_track_commands("/dev/sr1", [(1, 0, 1000)], {1: ("01.flac", [])}, reader="cdparanoia")
     assert reader[0] == "cdparanoia" and "1-1" in reader
+
+
+def test_through_file_splits_the_pipeline_at_a_wav():
+    [(pipeline, _)] = audio_track_commands("D:", [(3, 0, 1000)], {3: ("03.flac", ["-metadata", "title=C"])})
+    read, encode = through_file(pipeline, "w/3.wav")
+    assert len(read) == 1 and read[0][0] == "cd-paranoia" and read[0][-1] == "w/3.wav" and "3-3" in read[0]
+    assert len(encode) == 1 and "pipe:0" not in encode[0]
+    assert encode[0][encode[0].index("w/3.wav") - 1] == "-i" and encode[0][-1] == "03.flac"
