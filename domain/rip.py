@@ -83,21 +83,27 @@ def dvd_title_command(device: str, title_number: int, output: str) -> Pipeline:
 
 
 def audio_track_commands(
-    device: str, spans: list[tuple[int, int, int]], outputs: dict[int, tuple[str, list[str]]]
+    device: str, spans: list[tuple[int, int, int]], outputs: dict[int, tuple[str, list[str]]], cover: str = ""
 ) -> list[tuple[Pipeline, int]]:
     """One cd-paranoia | ffmpeg pipeline per track, so every FLAC gets a correct header.
 
     Returns (pipeline, duration_ms) pairs. cd-paranoia does the reading because ffmpeg's libcdio
     demuxer spins forever once a read comes within a fraction of a second of the lead-out,
     i.e. on every disc's last track. outputs maps track number -> (output path, extra ffmpeg args
-    such as -metadata tags).
+    such as -metadata tags). cover, if given, is embedded as the FLAC front-cover picture.
     """
+    picture = (
+        ["-i", cover, "-map", "0:a", "-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic",
+         "-metadata:s:v", "comment=Cover (front)"]
+        if cover else []
+    )  # fmt: skip
     return [
         (
             [
                 ["cd-paranoia", "--force-cdrom-device", device, "--disable-paranoia", "--quiet",
                  "--output-wav", f"{number}-{number}", "-"],
-                [*_FFMPEG, "-f", "wav", "-i", "pipe:0", "-c:a", "flac", *outputs[number][1], outputs[number][0]],
+                [*_FFMPEG, "-f", "wav", "-i", "pipe:0", *picture, "-c:a", "flac", *outputs[number][1],
+                 outputs[number][0]],
             ],
             end_ms - start_ms,
         )

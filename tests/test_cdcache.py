@@ -1,10 +1,17 @@
+from dataclasses import replace
+
 from domain.cdcache import (
+    COVER_ARCHIVE,
+    COVER_MISSING,
+    COVER_USER,
     RETRY_AFTER_S,
     CdRecord,
     LyricsEntry,
+    cover_file_name,
     known_lyrics,
     lyrics_needed,
     needs_album_lookup,
+    needs_cover_lookup,
     record_from_dict,
     record_to_dict,
 )
@@ -52,3 +59,18 @@ def test_round_trip_and_bad_data():
     assert record_from_dict(record_to_dict(CdRecord(None, "none", NOW))) == CdRecord(None, "none", NOW)
     assert record_from_dict({"version": 999}) is None
     assert record_from_dict({"version": 1, "album": {"title": "x"}}) is None
+
+
+def test_cover_lookup_rules():
+    linked = replace(ALBUM, release_id="31d42c4a")
+    assert needs_cover_lookup(CdRecord(linked, "musicbrainz", NOW), NOW)
+    assert not needs_cover_lookup(CdRecord(ALBUM, "cd-text", NOW), NOW)  # no release, nowhere to look
+    assert not needs_cover_lookup(None, NOW)
+    found = CdRecord(linked, "musicbrainz", NOW, cover_source=COVER_ARCHIVE, cover_file="x.jpg", cover_checked=NOW)
+    assert not needs_cover_lookup(found, NOW + 10 * RETRY_AFTER_S)
+    assert not needs_cover_lookup(replace(found, cover_source=COVER_USER), NOW + 10 * RETRY_AFTER_S)
+    missing = replace(found, cover_source=COVER_MISSING, cover_file="")
+    assert not needs_cover_lookup(missing, NOW + 60)
+    assert needs_cover_lookup(missing, NOW + RETRY_AFTER_S + 1)
+    assert record_from_dict(record_to_dict(found)) == found
+    assert cover_file_name("abc-", ".png") == "abc--cover.png"

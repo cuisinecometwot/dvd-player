@@ -54,6 +54,14 @@ def test_audio_track_commands_one_per_track():
     assert encoder[-3:] == ["-metadata", "title=B", "02.flac"]
 
 
+def test_audio_track_commands_embed_cover():
+    [((_, encoder), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])}, "cover.jpg")
+    assert encoder[encoder.index("pipe:0") + 1 : encoder.index("pipe:0") + 3] == ["-i", "cover.jpg"]
+    assert "attached_pic" in encoder and encoder[-1] == "01.flac"
+    [((_, plain), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])})
+    assert "-map" not in plain
+
+
 def test_dvd_title_command():
     [cmd] = dvd_title_command("/dev/sr0", 2, "out.mkv")
     assert cmd[cmd.index("-title") + 1] == "2"

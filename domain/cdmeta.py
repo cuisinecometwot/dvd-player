@@ -22,6 +22,7 @@ class AlbumInfo:
     artist: str
     year: str = ""
     tracks: tuple[TrackInfo, ...] = field(default_factory=tuple)
+    release_id: str = ""  # MusicBrainz release MBID; the key for cover art
 
     def track(self, number: int) -> TrackInfo:
         found = next((t for t in self.tracks if t.number == number), None)
@@ -63,6 +64,7 @@ def parse_release(release: dict, track_count: int) -> AlbumInfo | None:
         artist=album_artist,
         year=(release.get("date") or "")[:4],
         tracks=tuple(tracks),
+        release_id=release.get("id", ""),
     )
 
 
@@ -72,6 +74,15 @@ def blank_album(track_numbers: list[int]) -> AlbumInfo:
         artist="Unknown Artist",
         tracks=tuple(TrackInfo(n, f"Track {n:02d}") for n in track_numbers),
     )
+
+
+COVER_EXTENSIONS = {".jpg": ".jpg", ".jpeg": ".jpg", ".png": ".png"}
+
+
+def cover_extension(filename: str) -> str | None:
+    """Normalized extension for a usable cover image (what FLAC players accept), else None."""
+    dot = filename.rfind(".")
+    return COVER_EXTENSIONS.get(filename[dot:].lower()) if dot >= 0 else None
 
 
 def album_folder_name(info: AlbumInfo) -> str:

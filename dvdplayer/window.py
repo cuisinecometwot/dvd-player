@@ -1,5 +1,6 @@
 """Main window: drive panel + title/chapter list in a sidebar, video and controls in the content area."""
 
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -11,7 +12,12 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from domain.cd import track_after, track_before  # noqa: E402
-from domain.cdcache import SOURCE_CD_TEXT, SOURCE_EDITED, SOURCE_MUSICBRAINZ  # noqa: E402
+from domain.cdcache import (  # noqa: E402
+    COVER_USER,
+    SOURCE_CD_TEXT,
+    SOURCE_EDITED,
+    SOURCE_MUSICBRAINZ,
+)
 from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name, flac_tags, track_file_name  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
 from domain.lyrics import Lyrics, line_index_at, lrc_path_for, lrc_text, lyrics_tag, parse_lrc  # noqa: E402
@@ -29,6 +35,7 @@ from domain.rip import (  # noqa: E402
 from dvdplayer import lrclib  # noqa: E402
 from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
+from dvdplayer.images import load_texture  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
 from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
 from dvdplayer.video_view import VideoView  # noqa: E402
@@ -80,6 +87,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._album_listener = None  # set while the rip dialog is open
         self._lyrics_lines: list[tuple[int, str]] = []
         self._lyrics_index = -2  # line currently shown; -2 forces a redraw
+        self._cover_key: tuple | None = None  # (path, mtime) of the cover on screen
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -143,6 +151,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._drive_row = self._info_row(drive_group, "Drive", self._drive.name)
         self._status_row = self._info_row(drive_group, "Status", "—")
         self._disc_row = self._info_row(drive_group, "Disc", "—")
+        self._disc_thumb = Gtk.Picture(visible=False, valign=Gtk.Align.CENTER)
+        self._disc_thumb.add_css_class("card")
+        self._disc_thumb.set_overflow(Gtk.Overflow.HIDDEN)
+        self._disc_row.add_prefix(self._disc_thumb)
         self._region_row = self._info_row(drive_group, "Disc region", "—")
         box.append(drive_group)
 
@@ -176,8 +188,7 @@ class MainWindow(Adw.ApplicationWindow):
         click.connect("pressed", self._on_video_click)
         self._video.add_controller(click)
 
-        self._cd_page = Adw.StatusPage(icon_name="media-optical-cd-audio-symbolic", vexpand=True)
-        self._cd_page.set_child(self._build_lyrics_view())
+        self._cd_page = self._build_cd_page()
         self._media_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
         self._media_stack.add_named(self._video, "video")
         self._media_stack.add_named(self._cd_page, "cd")
@@ -190,6 +201,42 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._empty_page, "empty")
         self._stack.add_named(player_box, "player")
         return self._stack
+
+    def _build_cd_page(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(24)
+        self._cover_picture = Gtk.Picture(halign=Gtk.Align.CENTER, visible=False)
+        self._cover_picture.add_css_class("card")
+        self._cover_picture.set_overflow(Gtk.Overflow.HIDDEN)
+        self._cd_icon = Gtk.Image(icon_name="media-optical-cd-audio-symbolic", pixel_size=128)
+        self._cd_icon.add_css_class("dim-label")
+        self._cd_title = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
+        self._cd_title.add_css_class("title-1")
+        self._cd_desc = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
+        self._cd_desc.add_css_class("dim-label")
+        for widget in (self._cover_picture, self._cd_icon, self._cd_title, self._cd_desc, self._build_lyrics_view()):
+            box.append(widget)
+        page = Gtk.ScrolledWindow(child=Adw.Clamp(child=box, maximum_size=720), vexpand=True)
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        return page
+
+    def _refresh_cover(self) -> None:
+        path = self._cd_info.cover_path if self._cd_mode else None
+        try:
+            key = (path, path.stat().st_mtime_ns) if path else None
+        except OSError:
+            key = None
+        if key == self._cover_key:
+            return  # lyrics updates also land here; don't decode the image each time
+        self._cover_key = key
+        big = load_texture(path, 300, 300) if key else None
+        self._cover_picture.set_paintable(big)
+        self._cover_picture.set_visible(big is not None)
+        self._cd_icon.set_visible(big is None)
+        small = load_texture(path, 40, 40) if key else None
+        self._disc_thumb.set_paintable(small)
+        self._disc_thumb.set_visible(small is not None)
 
     def _build_lyrics_view(self) -> Gtk.Widget:
         self._lyrics_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vhomogeneous=False)
@@ -335,6 +382,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_cd_mode(True)
         self._cd_info.load(self._drive, tracks, leadout, self._audio_spans)
         self._build_cd_rows()
+        self._refresh_cover()
         self._loaded = True
         self._stack.set_visible_child_name("player")
         self._play_cd_track(self._audio_spans[0][0])
@@ -347,6 +395,7 @@ class MainWindow(Adw.ApplicationWindow):
                 row.set_title(f"{number}. {album.track(number).title}")
         if self._cd_track is not None:
             self._show_cd_track(self._cd_track)
+        self._refresh_cover()
         if self._album_listener:
             self._album_listener()
 
@@ -392,8 +441,8 @@ class MainWindow(Adw.ApplicationWindow):
         found = self._cd_info.named and info is not None
         track = info.track(number) if found else TrackInfo(number, f"Track {number}")
         album = f"{info.title} · {track.artist or info.artist}" if found else self._disc_label
-        self._cd_page.set_title(track.title)
-        self._cd_page.set_description(
+        self._cd_title.set_label(track.title)
+        self._cd_desc.set_label(
             f"{album} · track {number} of {total}" + (f" · {format_duration(span[2] - span[1])}" if span else "")
         )
         for n, marker in self._title_markers.items():
@@ -471,6 +520,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._audio_spans = []
         self._cd_info.clear()
         self._lyrics_lines = []
+        self._refresh_cover()
         self._rip_options = RipOptions((), "No disc")
         self._rip_btn.set_sensitive(False)
         self._clear_title_rows()
@@ -749,6 +799,50 @@ class MainWindow(Adw.ApplicationWindow):
             active=True,
         )
         album_group.add(lyrics_row)
+        cover_row = Adw.ActionRow(title="Cover")
+        cover_thumb = Gtk.Picture(valign=Gtk.Align.CENTER)
+        cover_thumb.add_css_class("card")
+        cover_thumb.set_overflow(Gtk.Overflow.HIDDEN)
+        cover_row.add_prefix(cover_thumb)
+        choose_cover = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        cover_row.add_suffix(choose_cover)
+        album_group.add(cover_row)
+        cover_error = {"text": ""}
+
+        def show_cover() -> None:
+            path = self._cd_info.cover_path
+            cover_thumb.set_paintable(load_texture(path, 48, 48))
+            cover_thumb.set_visible(path is not None)
+            source = self._cd_info.cover_source
+            if cover_error["text"]:
+                text = cover_error["text"]
+            elif path is None:
+                text = "None found — choose an image" if not self._cd_info.resolving else "Looking…"
+            elif source == COVER_USER:
+                text = "Your image · embedded in each FLAC and saved as cover.jpg/png"
+            else:
+                text = "From the Cover Art Archive · embedded in each FLAC and saved as cover.jpg"
+            cover_row.set_subtitle(text)
+
+        def on_cover_chosen(file_dialog, result):
+            try:
+                picked = file_dialog.open_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            cover_error["text"] = self._cd_info.set_cover(Path(picked.get_path())) or ""
+            show_cover()
+
+        def pick_cover(*_):
+            images = Gtk.FileFilter(name="Images (JPEG, PNG)")
+            for mime in ("image/jpeg", "image/png"):
+                images.add_mime_type(mime)
+            filters = Gio.ListStore.new(Gtk.FileFilter)
+            filters.append(images)
+            Gtk.FileDialog(title="Choose a cover image", filters=filters, default_filter=images).open(
+                self, None, on_cover_chosen
+            )
+
+        choose_cover.connect("clicked", pick_cover)
         tracks_group = Adw.PreferencesGroup(title="Tracks")
         track_rows = {}
         for number, _, _ in self._audio_spans:
@@ -786,9 +880,11 @@ class MainWindow(Adw.ApplicationWindow):
                 fill(self._cd_info.album)
             state["named"] = self._cd_info.named
             show_status()
+            show_cover()
 
         fill(info)
         show_status()
+        show_cover()
         for row in (album_row, artist_row, year_row, *track_rows.values()):
             row.connect("changed", on_changed)
         self._album_listener = on_info_changed
@@ -839,12 +935,14 @@ class MainWindow(Adw.ApplicationWindow):
                 n: (str(album / track_file_name(info, n)), flac_tags(info, n, total)) for n, _, _ in self._audio_spans
             }
             flacs = [path for path, _ in outputs.values()]
-            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, flacs + [lrc_path_for(p) for p in flacs])
+            cover = self._copy_cover(album)
+            extras = [lrc_path_for(p) for p in flacs] + ([cover] if cover else [])
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, flacs + extras)
             what, self._rip_dest = f"Ripping {total} tracks", album
             spans = list(self._audio_spans)
-            steps = audio_track_commands(device, spans, outputs)
+            steps = audio_track_commands(device, spans, outputs, cover)
             if want_lyrics:
-                steps = self._with_lyrics(device, info, spans, outputs, self._cd_info.known_lyrics())
+                steps = self._with_lyrics(device, info, spans, outputs, self._cd_info.known_lyrics(), cover)
         else:
             out = free(f"{base}.iso")
             job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
@@ -865,7 +963,7 @@ class MainWindow(Adw.ApplicationWindow):
             job.start(steps)
 
     @staticmethod
-    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs, known: dict[int, Lyrics | None]):
+    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs, known: dict[int, Lyrics | None], cover: str):
         """Rip preparation run on the job thread: fetch missing lyrics, write .lrc files, add LYRICS tags."""
 
         def prepare(status):
@@ -888,9 +986,21 @@ class MainWindow(Adw.ApplicationWindow):
                         )
                     except OSError:
                         pass  # lyrics are a bonus; never fail the rip over them
-            return audio_track_commands(device, spans, outputs)
+            return audio_track_commands(device, spans, outputs, cover)
 
         return prepare
+
+    def _copy_cover(self, album: Path) -> str:
+        """cover.jpg/png in the album folder (what music players look for); "" when there is none."""
+        source = self._cd_info.cover_path
+        if source is None:
+            return ""
+        target = album / f"cover{source.suffix}"
+        try:
+            shutil.copyfile(source, target)
+        except OSError:
+            return ""
+        return str(target)
 
     def _set_busy(self, busy: bool) -> None:
         for widget in (self._rip_btn, self._eject_btn, self._reload_btn, self._titles_group, self._controls):

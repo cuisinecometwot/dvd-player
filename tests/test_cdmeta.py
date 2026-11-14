@@ -3,6 +3,7 @@ from domain.cdmeta import (
     TrackInfo,
     album_folder_name,
     blank_album,
+    cover_extension,
     flac_tags,
     musicbrainz_disc_id,
     parse_release,
@@ -23,6 +24,7 @@ def _credit(*names: str) -> list[dict]:
 
 
 RELEASE = {
+    "id": "31d42c4a-8c2f-4915-9152-8f518aba22aa",
     "title": "雨夜 燕 1st Single「理論武装して」",
     "date": "2026-02-25",
     "artist-credit": _credit("初星学園", "雨夜燕"),
@@ -43,6 +45,7 @@ def test_parse_release():
     assert info.title == "雨夜 燕 1st Single「理論武装して」"
     assert info.artist == "初星学園、雨夜燕"
     assert info.year == "2026"
+    assert info.release_id == "31d42c4a-8c2f-4915-9152-8f518aba22aa"
     assert info.track(2) == TrackInfo(2, "理論武装して [Instrumental]", "初星学園")
     # Missing titles and credits fall back to a numbered title and the album artist.
     assert info.track(3) == TrackInfo(3, "Track 03", "初星学園、雨夜燕")
@@ -81,3 +84,10 @@ def test_flac_tags():
     }
     # Empty values (no year) are left out rather than written as blank tags.
     assert not any(a.startswith("date=") for a in flac_tags(AlbumInfo("A", "B"), 1, 1))
+
+
+def test_cover_extension():
+    assert cover_extension("Front.JPEG") == ".jpg"
+    assert cover_extension("a.b.png") == ".png"
+    assert cover_extension("scan.webp") is None
+    assert cover_extension("noext") is None
