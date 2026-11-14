@@ -109,11 +109,12 @@ class _Handle:
 class Drive(DriveBase):
     def __init__(self, device: str | None = None):
         self._auto = device is None
-        self.device = _normalize(device) if device else (find_optical_device() or "D:")
+        # Never guess a letter: without an optical drive "D:" is usually a hard-disk partition.
+        self.device = _normalize(device) if device else (find_optical_device() or "")
 
     def _follow_device(self) -> None:
-        if self._auto and _k32.GetDriveTypeW(self.device + "\\") != DRIVE_CDROM:
-            self.device = find_optical_device() or self.device
+        if self._auto and (not self.device or _k32.GetDriveTypeW(self.device + "\\") != DRIVE_CDROM):
+            self.device = find_optical_device() or ""
 
     @property
     def vlc_path(self) -> str:
@@ -128,6 +129,8 @@ class Drive(DriveBase):
 
     @property
     def name(self) -> str:
+        if not self.device:
+            return "No CD/DVD drive found"
         try:
             # STORAGE_PROPERTY_QUERY{StorageDeviceProperty, PropertyStandardQuery} -> STORAGE_DEVICE_DESCRIPTOR
             with self._open() as h:
@@ -143,6 +146,8 @@ class Drive(DriveBase):
 
     def status(self) -> DriveStatus:
         self._follow_device()
+        if not self.device:
+            return DriveStatus.NO_INFO
         try:
             with self._open() as h:
                 try:
