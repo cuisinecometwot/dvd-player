@@ -1,6 +1,8 @@
 """libvlc wrapper that renders video into memory so GTK4 can draw it (works on Wayland)."""
 
 import ctypes
+import ctypes.util
+import logging
 import sys
 import threading
 from collections.abc import Callable
@@ -26,6 +28,28 @@ _FormatCb = ctypes.CFUNCTYPE(
 
 FrameHandler = Callable[[bytes, int, int, int], None]
 
+log = logging.getLogger(__name__)
+vlc_log = logging.getLogger("vlc")
+LIBVLC_WARNING = 3  # libvlc_log_level: DEBUG=0, NOTICE=2, WARNING=3, ERROR=4
+LOG_LINE_BYTES = 1024
+
+
+def _c_formatter():
+    """vsnprintf for libvlc's (format, va_list) log messages; None if the C runtime can't be reached."""
+    try:
+        if sys.platform == "win32":
+            # UCRT has no exported vsnprintf (it is a header inline over this), and msvcrt's misreads C99 sizes.
+            fn = ctypes.CDLL("ucrtbase").__stdio_common_vsprintf
+            fn.argtypes = [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_void_p,
+                           ctypes.c_void_p]  # fmt: skip
+            snprintf_behaviour = 2  # _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR
+            return lambda buf, size, fmt, args: fn(snprintf_behaviour, buf, size, fmt, None, args)
+        fn = ctypes.CDLL(ctypes.util.find_library("c")).vsnprintf
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_void_p]
+        return lambda buf, size, fmt, args: fn(buf, size, fmt, args)
+    except (OSError, AttributeError, TypeError):
+        return None
+
 
 class Player:
     def __init__(self, on_frame: FrameHandler):
@@ -47,6 +71,34 @@ class Player:
         self._display_cb = vlc.CallbackDecorators.VideoDisplayCb(self._display_frame)
         self._mp.video_set_format_callbacks(self._format_cb, self._cleanup_cb)
         self._mp.video_set_callbacks(self._lock_cb, self._unlock_cb, self._display_cb, None)
+
+        # VLC's own warnings and errors go to the app log (a windowed exe has nowhere else to show them).
+        self._formatter = _c_formatter()
+        self._last_vlc_line = ("", 0)  # (text, repeats) so a message repeated every frame logs once
+        self._log_cb = vlc.CallbackDecorators.LogCb(self._on_vlc_log)
+        if self._formatter is not None:
+            self._instance.log_set(self._log_cb, None)
+        log.info("libvlc %s", (vlc.libvlc_get_version() or b"?").decode(errors="replace"))
+
+    def _on_vlc_log(self, _data, level, ctx, fmt, args) -> None:
+        if level < LIBVLC_WARNING:
+            return
+        try:
+            buf = ctypes.create_string_buffer(LOG_LINE_BYTES)
+            self._formatter(ctypes.cast(buf, ctypes.c_void_p), LOG_LINE_BYTES, fmt, args)
+            module = ctypes.c_char_p()
+            vlc.dll.libvlc_log_get_context(ctypes.cast(ctx, ctypes.c_void_p), ctypes.byref(module), None, None)
+            text = f"{(module.value or b'?').decode(errors='replace')}: {buf.value.decode(errors='replace')}"
+            last, repeats = self._last_vlc_line
+            if text == last:
+                self._last_vlc_line = (last, repeats + 1)
+                return
+            if repeats:
+                vlc_log.warning("(previous message repeated %d more times)", repeats)
+            self._last_vlc_line = (text, 0)
+            vlc_log.log(logging.ERROR if level > LIBVLC_WARNING else logging.WARNING, "%s", text)
+        except Exception:  # noqa: BLE001 - never let a log line raise inside VLC's thread
+            pass
 
     # --- VLC video thread callbacks ---
 
@@ -72,6 +124,7 @@ class Player:
     # --- control (main thread) ---
 
     def open(self, mrl: str) -> None:
+        log.info("open %s", mrl)
         self._mp.set_media(self._instance.media_new(mrl))
         self._play_new_media()
 
@@ -82,6 +135,7 @@ class Player:
         self._mp.play()
 
     def open_cd_track(self, device: str, track: int) -> None:
+        log.info("open cdda://%s track %d", device, track)
         media = self._instance.media_new(f"cdda://{device}")
         # Without a track option VLC treats the CD as a playlist, which a bare MediaPlayer won't walk.
         media.add_option(f":cdda-track={track}")
@@ -205,6 +259,7 @@ class Player:
         # VLC's video thread calls back into Python; it must be stopped before the interpreter exits.
         if self._mp is None:
             return
+        self._instance.log_unset()  # waits for a log callback in progress; none may run after this
         self._mp.stop()
         self._mp.release()
         self._instance.release()

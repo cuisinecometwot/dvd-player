@@ -2,9 +2,10 @@
 
 import sys
 
-from dvdplayer import winsetup
+from dvdplayer import applog, winsetup
 
 winsetup.configure()
+applog.setup("gtk")
 
 import gi  # noqa: E402
 

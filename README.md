@@ -111,6 +111,16 @@ Looking up an audio CD sends only the disc ID, its barcode, the song titles, art
 looked up once. The sidebar shows what is being fetched and from where. Nothing is sent for DVDs or for files
 you open from disk.
 
+**Clear Saved Data…** in the main menu (☰) deletes that cache (album names including your edits, covers,
+lyrics), temporary files a crash may have left behind, and old log files. Your rips are never touched.
+
+## Logs
+
+Each run writes a log to the temp folder (`/tmp/dvd-player-logs-<uid>/` on Linux, `%TEMP%\dvd-player-logs\`
+on Windows; **Open Log Folder** in the main menu opens it). It records drive and disc events, the rip commands
+and their errors, online lookups (host and path only), and VLC's warnings. Logs older than a day are deleted at
+startup; set `DVD_PLAYER_LOG_DAYS` (e.g. `7`, or `0` to keep only the current run) to change that.
+
 ## Copy protection
 
 Ripping a copy-protected (CSS) DVD would mean bypassing that protection, which the author's local law (Japan)
@@ -122,7 +132,7 @@ forbids even for private copies, so the app refuses and explains why. Playing th
 A personal project, used daily on one machine (Fedora, a Panasonic/Matshita USB DVD writer). Known gaps:
 
 - Ripping unprotected DVDs and reading CD-Text are implemented but haven't been tried on real discs yet.
-- Linux with GTK 4 / libadwaita only.
+- Windows build is experimental.
 
 Bug reports and pull requests are welcome.
 

@@ -1,7 +1,9 @@
 """Background rip jobs: ffmpeg subprocesses and raw disc-image copies, reported back on the GTK main loop."""
 
 import glob
+import logging
 import os
+import shlex
 import signal
 import subprocess
 import threading
@@ -23,6 +25,7 @@ DoneHandler = Callable[[bool, str], None]
 IMAGE_CHUNK = 2048 * 512  # 1 MiB, a whole number of DVD sectors
 PROGRESS_INTERVAL_S = 0.25
 KILL_GRACE_S = 3
+log = logging.getLogger(__name__)
 # Windows has no SIGPIPE: a reader whose consumer quit just fails its write and exits with an error code.
 _SIGPIPE_EXIT = -signal.SIGPIPE if hasattr(signal, "SIGPIPE") else 0
 
@@ -37,6 +40,7 @@ class RipJob:
         self._last_report = 0.0
 
     def cancel(self) -> None:
+        log.info("rip cancel requested")
         self._cancelled.set()
 
     def _report(self, fraction: float, force: bool = False) -> None:
@@ -47,6 +51,13 @@ class RipJob:
             GLib.idle_add(self._on_progress, fraction, text)
 
     def _finish(self, ok: bool, message: str) -> None:
+        log.log(
+            logging.INFO if ok else logging.WARNING,
+            "rip %s after %.0f s: %s",
+            "done" if ok else "stopped",
+            time.monotonic() - self._started,
+            message,
+        )
         if not ok:
             for pattern in self._partial_outputs:
                 for path in glob.glob(glob.escape(pattern) if "*" not in pattern else pattern):
@@ -96,6 +107,7 @@ class FfmpegJob(RipJob):
     def _run_one(self, pipeline: Pipeline, done_before: float, total: float, weight: float) -> str | None:
         procs: list[subprocess.Popen] = []
         stderr_tails: list[tuple[list[str], threading.Thread]] = []
+        log.info("run: %s", " | ".join(shlex.join(command) for command in pipeline))
         try:
             with self._procs_lock:
                 if self._cancelled.is_set():
@@ -138,6 +150,7 @@ class FfmpegJob(RipJob):
             # A reader killed by SIGPIPE only means the process after it gave up first.
             if proc.returncode not in (0, _SIGPIPE_EXIT):
                 reader.join(1)
+                log.warning("%s exited with %s; last output:\n%s", command[0], proc.returncode, "".join(tail))
                 detail = tail[-1].strip() if tail else f"exit code {proc.returncode}"
                 return f"{command[0]} failed: {detail}"
         return None
@@ -178,6 +191,7 @@ class ImageJob(RipJob):
         threading.Thread(target=self._run, args=(device, output, total_bytes), daemon=True).start()
 
     def _run(self, device: str, output: str, total_bytes: int) -> None:
+        log.info("copy disc image %s -> %s (%d bytes)", device, output, total_bytes)
         copied = 0
         try:
             with open(device, "rb", buffering=0) as src, open(output, "wb") as dst:

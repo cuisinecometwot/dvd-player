@@ -5,8 +5,8 @@ after the disc changed are dropped (generation counter).
 """
 
 import json
+import logging
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -37,20 +37,14 @@ from domain.cdmeta import AlbumInfo, blank_album, cover_extension, musicbrainz_d
 from domain.cdtext import parse_cd_info
 from domain.lyrics import Lyrics
 from domain.rip import CdTrack
-from dvdplayer import coverart, lrclib, musicbrainz, net
+from dvdplayer import appdata, coverart, lrclib, musicbrainz, net
 from dvdplayer.drive import Drive
 
-
-def app_cache_dir() -> Path:
-    """Everything the app stores; deleting this folder resets it. The Windows uninstaller removes it."""
-    if sys.platform == "win32":
-        # GLib's cache dir on Windows is the Internet Explorer cache (INetCache), not a place for app data.
-        return Path(os.environ.get("LOCALAPPDATA") or GLib.get_user_cache_dir()) / "dvd-player"
-    return Path(GLib.get_user_cache_dir()) / "dvd-player"
+log = logging.getLogger(__name__)
 
 
 def cache_dir() -> Path:
-    return app_cache_dir() / "cd"
+    return appdata.cache_root() / "cd"
 
 
 def _load(disc_id: str) -> CdRecord | None:
@@ -129,6 +123,7 @@ class CdInfo:
         numbers = [n for n, _, _ in spans]
         self.album = blank_album(numbers)
         record = _load(self.disc_id)
+        log.info("CD %s: %d tracks, cached: %s", self.disc_id, len(numbers), record.source if record else "nothing")
         if record and record.album and [t.number for t in record.album.tracks] != numbers:
             record = None  # disc-ID collision or a hand-edited file: start over
         if record and record.album:
@@ -198,6 +193,7 @@ class CdInfo:
         GLib.idle_add(self._set_task, gen, key, text)
 
     def _network_failed(self, gen: int, key: str, service: str) -> bool:
+        log.warning("%s unreachable while fetching %s", service, key)
         if gen == self._gen:
             self._tasks.pop(key, None)
             self._failed.add(service)
@@ -286,6 +282,7 @@ class CdInfo:
         if gen != self._gen:
             return False
         self._tasks.pop("album", None)
+        log.info("CD %s: names from %s: %s", self.disc_id, source or "?", info.title if info else "-")
         if source in (SOURCE_CD_TEXT, SOURCE_MUSICBRAINZ, SOURCE_NONE):
             self._downloaded = self._downloaded or source != SOURCE_CD_TEXT
         old = self._record

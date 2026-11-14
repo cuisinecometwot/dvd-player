@@ -1,7 +1,7 @@
 """Main window: drive panel + title/chapter list in a sidebar, video and controls in the content area."""
 
+import logging
 import shutil
-import sys
 import tempfile
 import threading
 import time
@@ -24,6 +24,7 @@ from domain.cdcache import (  # noqa: E402
 )
 from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
+from domain.housekeeping import format_bytes  # noqa: E402
 from domain.library import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, media_kind  # noqa: E402
 from domain.lyrics import Lyrics, line_index_at, parse_lrc  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
@@ -37,8 +38,8 @@ from domain.rip import (  # noqa: E402
     safe_filename,
     unique_name,
 )
-from dvdplayer import audiorip  # noqa: E402
-from dvdplayer.cdinfo import CdInfo, app_cache_dir  # noqa: E402
+from dvdplayer import appdata, applog, audiorip  # noqa: E402
+from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.images import load_texture  # noqa: E402
 from dvdplayer.localmedia import OpenedAlbum, read_album  # noqa: E402
@@ -51,6 +52,8 @@ DRIVE_POLL_S = 2
 SEEK_STEP_MS = 10_000
 VOLUME_STEP = 5
 MOUNT_WAIT_POLLS = 5  # give GNOME automount ~10s before playing without IFO info
+
+log = logging.getLogger(__name__)
 
 EMPTY_PAGES = {
     DriveStatus.NO_DISC: ("Insert a disc", "Playback starts automatically."),
@@ -101,6 +104,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._rip_work_dir: Path | None = None  # temp files for the running rip (Opus metadata)
         self._want_opus = False  # remembered between rips in this session
         self._audio_spans: list[tuple[int, int, int]] = []
+        self._cd_toc: tuple[list, int] | None = None  # (tracks, lead-out) of the audio CD, to reload its info
         self._cd_mode = False
         self._cd_track: int | None = None
         self._cd_info = CdInfo(self._on_cd_info_changed)
@@ -125,7 +129,8 @@ class MainWindow(Adw.ApplicationWindow):
             Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
         self._build_ui()
-        self._add_open_actions(app)
+        self._add_actions(app)
+        log.info("drive %s (%s)", self._drive.device, self._drive.name)
         self.connect("close-request", self._on_close)
         self.connect("notify::fullscreened", self._on_fullscreen_changed)
 
@@ -150,6 +155,10 @@ class MainWindow(Adw.ApplicationWindow):
             menu_model=open_menu,
         )
         header.pack_start(self._open_btn)
+        main_menu = Gio.Menu()
+        main_menu.append("Clear Saved Data…", "win.clear-data")
+        main_menu.append("Open Log Folder", "win.open-logs")
+        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", tooltip_text="Main menu", menu_model=main_menu))
         self._eject_btn = Gtk.Button(icon_name="media-eject-symbolic", tooltip_text="Eject")
         self._eject_btn.connect("clicked", self._on_eject)
         header.pack_end(self._eject_btn)
@@ -211,8 +220,7 @@ class MainWindow(Adw.ApplicationWindow):
             tooltip_text=(
                 "Names, lyrics and covers come from the disc's CD-Text when it has any, otherwise from "
                 "MusicBrainz, LRCLIB and the Cover Art Archive. Only the disc ID, barcode, song titles, "
-                "artist and track lengths are sent. Results are kept in "
-                f"{app_cache_dir() if sys.platform == 'win32' else '~/.cache/dvd-player'}, "
+                f"artist and track lengths are sent. Results are kept in {appdata.cache_root_display()}, "
                 "so a disc is only looked up once."
             ),
         )
@@ -404,6 +412,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _poll_drive(self) -> bool:
         status = self._drive.status()
         if status is not self._status:
+            log.info("drive status: %s", status.name)
             self._status = status
             self._status_row.set_subtitle(status.label)
             self._eject_btn.set_icon_name(
@@ -436,7 +445,9 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._load_pending = False
         is_video = Drive.is_dvd_video(mount)
-        self._rip_options = rip_options(kind, is_video, self._drive.is_copy_protected())
+        protected = self._drive.is_copy_protected()
+        log.info("disc %s, label %r, mount %r, video DVD %s, CSS %s", kind.name, label, mount, is_video, protected)
+        self._rip_options = rip_options(kind, is_video, protected)
         self._rip_btn.set_sensitive(self._rip_job is None)
 
         if kind is DiscKind.AUDIO:
@@ -465,6 +476,8 @@ class MainWindow(Adw.ApplicationWindow):
     def _load_audio_cd(self) -> None:
         tracks, leadout = self._drive.cd_tracks()
         self._audio_spans = audio_track_spans(tracks, leadout)
+        self._cd_toc = (tracks, leadout)
+        log.info("audio CD: %d audio tracks of %d", len(self._audio_spans), len(tracks))
         if not self._audio_spans:
             self._show_empty_page("No audio tracks", "The disc's table of contents couldn't be read.")
             return
@@ -658,7 +671,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._local_work_dir = None
         self._titles, self._disc_info = [], []
         self._last_position = None
-        self._audio_spans = []
+        self._audio_spans, self._cd_toc = [], None
         self._cd_info.clear()
         self._lyrics_lines = []
         self._refresh_cover()
@@ -682,15 +695,55 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ---------- files from disk ----------
 
-    def _add_open_actions(self, app: Adw.Application) -> None:
+    def _add_actions(self, app: Adw.Application) -> None:
         for name, handler, accel in (
             ("open-file", self._choose_file, "<Control>o"),
             ("open-folder", self._choose_folder, "<Control><Shift>o"),
+            ("clear-data", self._confirm_clear_data, None),
+            ("open-logs", self._open_log_folder, None),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda *_a, h=handler: h())
             self.add_action(action)
-            app.set_accels_for_action(f"win.{name}", [accel])
+            if accel:
+                app.set_accels_for_action(f"win.{name}", [accel])
+
+    # ---------- saved data and logs ----------
+
+    def _confirm_clear_data(self) -> None:
+        if self._rip_job is not None:
+            self._toasts.add_toast(Adw.Toast(title="Wait for the rip to finish"))
+            return
+        target = appdata.clearable({p for p in (self._rip_work_dir, self._local_work_dir) if p})
+        if not target.paths:
+            self._toasts.add_toast(Adw.Toast(title="Nothing to clear"))
+            return
+        alert = Adw.AlertDialog(
+            heading="Clear saved data?",
+            body=f"Deletes {format_bytes(target.size)}: album names (including your edits), covers and lyrics "
+            "saved for your CDs, leftover temporary files, and older log files.\n\n"
+            "Your rips are not touched. CDs are looked up online again the next time they play.",
+        )
+        alert.add_response("cancel", "Cancel")
+        alert.add_response("clear", "Clear")
+        alert.set_response_appearance("clear", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.set_default_response("cancel")
+        alert.connect("response", lambda _a, response: response == "clear" and self._clear_data(target))
+        alert.present(self)
+
+    def _clear_data(self, target: appdata.Clearable) -> None:
+        freed = appdata.clear(target)
+        log.info("cleared saved data: %d bytes in %d items", freed, len(target.paths))
+        self._toasts.add_toast(Adw.Toast(title=f"Cleared {format_bytes(freed)}"))
+        if self._cd_toc and self._local_album is None and self._cd_mode:
+            # The disc in the drive lost its saved names and cover: look them up again right away.
+            self._cd_info.load(self._drive, *self._cd_toc, self._audio_spans)
+            self._on_cd_info_changed()
+
+    def _open_log_folder(self) -> None:
+        folder = applog.log_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        Gio.AppInfo.launch_default_for_uri(folder.as_uri(), None)
 
     def _can_open(self) -> bool:
         if self._rip_job is not None:
@@ -747,6 +800,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _open_path(self, path: Path) -> None:
         """A folder or an audio file opens the album (from that track); a video file plays on its own."""
         kind = "folder" if path.is_dir() else media_kind(path.name)
+        log.info("open %s (%s)", path, kind)
         if kind is None:
             self._toasts.add_toast(Adw.Toast(title=f"Can't play {path.name}"))
             return
@@ -1207,6 +1261,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         base = safe_filename(self._disc_label)
         device = self._drive.device
+        log.info("rip %s (title %d) to %s", kind.name, title_index, folder)
         if kind is RipKind.DVD_TITLE:
             title = next((t for t in self._titles if t.index == title_index), None)
             out = free(f"{base} - {title.label if title else f'Title {title_index + 1}'}.mkv")
