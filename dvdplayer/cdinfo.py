@@ -13,8 +13,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from gi.repository import GLib
-
 from domain.cdcache import (
     COVER_ARCHIVE,
     COVER_MISSING,
@@ -37,7 +35,7 @@ from domain.cdmeta import AlbumInfo, blank_album, cover_extension, musicbrainz_d
 from domain.cdtext import parse_cd_info
 from domain.lyrics import Lyrics
 from domain.rip import CdTrack
-from dvdplayer import appdata, coverart, lrclib, musicbrainz, net
+from dvdplayer import appdata, coverart, lrclib, mainthread, musicbrainz, net
 from dvdplayer.drive import Drive
 
 log = logging.getLogger(__name__)
@@ -190,7 +188,7 @@ class CdInfo:
 
     def _report(self, gen: int, key: str, text: str) -> None:
         """From a worker thread."""
-        GLib.idle_add(self._set_task, gen, key, text)
+        mainthread.call(self._set_task, gen, key, text)
 
     def _network_failed(self, gen: int, key: str, service: str) -> bool:
         log.warning("%s unreachable while fetching %s", service, key)
@@ -211,15 +209,15 @@ class CdInfo:
             # The disc's own CD-Text wins over any online database.
             info = parse_cd_info(drive.cd_info_report(), numbers)
             if info is not None:
-                GLib.idle_add(self._album_resolved, gen, info, SOURCE_CD_TEXT)
+                mainthread.call(self._album_resolved, gen, info, SOURCE_CD_TEXT)
                 return
             self._report(gen, "album", "Looking up the album on MusicBrainz")
             try:
                 info = musicbrainz.lookup(disc_id, drive.mcn(), len(numbers))
             except net.NetworkError:
-                GLib.idle_add(self._album_unreachable, gen)
+                mainthread.call(self._album_unreachable, gen)
                 return
-            GLib.idle_add(self._album_resolved, gen, info, SOURCE_MUSICBRAINZ if info else SOURCE_NONE)
+            mainthread.call(self._album_resolved, gen, info, SOURCE_MUSICBRAINZ if info else SOURCE_NONE)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -309,9 +307,9 @@ class CdInfo:
             try:
                 data = coverart.fetch_front(release_id)
             except net.NetworkError:
-                GLib.idle_add(self._network_failed, gen, "cover", "Cover Art Archive")
+                mainthread.call(self._network_failed, gen, "cover", "Cover Art Archive")
                 return
-            GLib.idle_add(self._cover_resolved, gen, release_id, data)
+            mainthread.call(self._cover_resolved, gen, release_id, data)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -359,9 +357,9 @@ class CdInfo:
                 try:
                     found = lrclib.fetch(track.title, track.artist or album.artist, durations.get(number, 0))
                 except net.NetworkError:
-                    GLib.idle_add(self._network_failed, gen, "lyrics", "LRCLIB")
+                    mainthread.call(self._network_failed, gen, "lyrics", "LRCLIB")
                     return  # unreachable: don't hammer it for every remaining track
-                GLib.idle_add(self._lyrics_resolved, (gen, lyrics_gen), number, track.title, found)
+                mainthread.call(self._lyrics_resolved, (gen, lyrics_gen), number, track.title, found)
             self._report(gen, "lyrics", "")
 
         threading.Thread(target=work, daemon=True).start()

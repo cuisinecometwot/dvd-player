@@ -4,12 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
-import gi
-
-gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import GdkPixbuf, GLib  # noqa: E402
-
-from domain.cdmeta import (  # noqa: E402
+from domain.cdmeta import (
     AlbumInfo,
     ffmetadata,
     metadata_args,
@@ -17,10 +12,11 @@ from domain.cdmeta import (  # noqa: E402
     track_file_name,
     track_tags,
 )
-from domain.lyrics import Lyrics, lrc_path_for, lrc_text  # noqa: E402
-from domain.rip import OPUS_PROGRESS_WEIGHT, audio_track_commands, opus_command, through_file  # noqa: E402
-from dvdplayer import lrclib, net  # noqa: E402
-from dvdplayer.ripper import Prepare, Step  # noqa: E402
+from domain.imageinfo import image_info
+from domain.lyrics import Lyrics, lrc_path_for, lrc_text
+from domain.rip import OPUS_PROGRESS_WEIGHT, audio_track_commands, opus_command, through_file
+from dvdplayer import lrclib, net
+from dvdplayer.ripper import Prepare, Step
 
 
 def _paranoia() -> str:
@@ -34,11 +30,12 @@ def _opus_picture(cover: str) -> str:
         return ""
     try:
         data = Path(cover).read_bytes()
-        info = GdkPixbuf.Pixbuf.get_file_info(cover)
-    except (OSError, GLib.Error):
+    except OSError:
         return ""
-    fmt, width, height = info if info and info[0] else (None, 0, 0)
-    mime = "image/png" if cover.lower().endswith(".png") else "image/jpeg"
+    info = image_info(data)
+    if info is None:
+        return ""  # not a JPEG/PNG: players would reject the block anyway
+    mime, width, height = info
     return picture_block(data, mime, width, height)
 
 

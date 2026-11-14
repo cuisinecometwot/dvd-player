@@ -120,3 +120,15 @@ def test_track_tags_and_opus_name():
         "title": "Song", "artist": "Band", "album": "Album", "album_artist": "Band", "track": "1", "TRACKTOTAL": "6",
     }  # fmt: skip
     assert track_file_name(info, 1, ".opus") == "01 - Song.opus"
+
+
+def test_edited_album_fills_blanks_and_keeps_real_per_track_artists():
+    from domain.cdmeta import edited_album
+
+    current = AlbumInfo(
+        title="Old", artist="Band", year="1999",
+        tracks=(TrackInfo(1, "a", "Band"), TrackInfo(2, "b", "Guest")),
+    )  # fmt: skip
+    album = edited_album(current, "  New  ", "", " 2001 ", {1: " One ", 2: ""})
+    assert (album.title, album.artist, album.year) == ("New", "Unknown Artist", "2001")
+    assert album.tracks == (TrackInfo(1, "One", "Unknown Artist"), TrackInfo(2, "Track 02", "Guest"))

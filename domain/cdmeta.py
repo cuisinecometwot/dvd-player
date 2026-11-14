@@ -147,3 +147,15 @@ def picture_block(data: bytes, mime: str, width: int, height: int, description: 
         + struct.pack(">IIIII", width, height, 24, 0, len(data)) + data
     )  # fmt: skip
     return base64.b64encode(block).decode("ascii")
+
+
+def edited_album(current: AlbumInfo, title: str, artist: str, year: str, track_titles: dict[int, str]) -> AlbumInfo:
+    """The album as typed in the rip dialog; blanks fall back to Unknown Album/Artist and Track NN."""
+    artist = artist.strip() or "Unknown Artist"
+    tracks = []
+    for number, text in track_titles.items():
+        old = current.track(number)
+        # Per-track artists from MusicBrainz are kept unless they just repeated the album artist.
+        track_artist = old.artist if old.artist and old.artist != current.artist else artist
+        tracks.append(TrackInfo(number, text.strip() or f"Track {number:02d}", track_artist))
+    return AlbumInfo(title=title.strip() or "Unknown Album", artist=artist, year=year.strip(), tracks=tuple(tracks))

@@ -52,7 +52,8 @@ def _c_formatter():
 
 
 class Player:
-    def __init__(self, on_frame: FrameHandler):
+    def __init__(self, on_frame: FrameHandler | None):
+        """on_frame gets each decoded RV32 frame; None means VLC draws into a window given to set_window()."""
         self._on_frame = on_frame
         self._instance = vlc.Instance(*_VLC_ARGS)
         self._mp = self._instance.media_player_new()
@@ -62,15 +63,16 @@ class Player:
         self._volume = 100
         self._volume_pending = False
 
-        # Keep references: ctypes callbacks are freed if garbage-collected while VLC still holds them.
-        self._format_raw = _FormatCb(self._setup_format)
-        self._format_cb = vlc.CallbackDecorators.VideoFormatCb(ctypes.cast(self._format_raw, ctypes.c_void_p).value)
-        self._cleanup_cb = vlc.CallbackDecorators.VideoCleanupCb(lambda _opaque: None)
-        self._lock_cb = vlc.CallbackDecorators.VideoLockCb(self._lock_frame)
-        self._unlock_cb = vlc.CallbackDecorators.VideoUnlockCb(lambda *_: None)
-        self._display_cb = vlc.CallbackDecorators.VideoDisplayCb(self._display_frame)
-        self._mp.video_set_format_callbacks(self._format_cb, self._cleanup_cb)
-        self._mp.video_set_callbacks(self._lock_cb, self._unlock_cb, self._display_cb, None)
+        if on_frame is not None:
+            # Keep references: ctypes callbacks are freed if garbage-collected while VLC still holds them.
+            self._format_raw = _FormatCb(self._setup_format)
+            self._format_cb = vlc.CallbackDecorators.VideoFormatCb(ctypes.cast(self._format_raw, ctypes.c_void_p).value)
+            self._cleanup_cb = vlc.CallbackDecorators.VideoCleanupCb(lambda _opaque: None)
+            self._lock_cb = vlc.CallbackDecorators.VideoLockCb(self._lock_frame)
+            self._unlock_cb = vlc.CallbackDecorators.VideoUnlockCb(lambda *_: None)
+            self._display_cb = vlc.CallbackDecorators.VideoDisplayCb(self._display_frame)
+            self._mp.video_set_format_callbacks(self._format_cb, self._cleanup_cb)
+            self._mp.video_set_callbacks(self._lock_cb, self._unlock_cb, self._display_cb, None)
 
         # VLC's own warnings and errors go to the app log (a windowed exe has nowhere else to show them).
         self._formatter = _c_formatter()
@@ -122,6 +124,16 @@ class Player:
         self._on_frame(data, w, h, stride)
 
     # --- control (main thread) ---
+
+    def set_window(self, handle: int) -> None:
+        """Let VLC draw (hardware-accelerated) into a native window: an HWND on Windows, an X11 window id."""
+        if sys.platform == "win32":
+            self._mp.set_hwnd(handle)
+        else:
+            self._mp.set_xwindow(handle)
+        # Clicks and keys go to the app's widget underneath, not to VLC (double-click = fullscreen, Space...).
+        self._mp.video_set_mouse_input(False)
+        self._mp.video_set_key_input(False)
 
     def open(self, mrl: str) -> None:
         log.info("open %s", mrl)

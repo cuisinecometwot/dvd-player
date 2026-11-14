@@ -73,7 +73,7 @@ def main() -> int:
              "-disposition:v", "attached_pic", "-metadata", "title=M4a Song", str(work / "a.m4a")],
             [*sine, "-c:a", "libvorbis", "-metadata", "title=Ogg Song", str(work / "a.ogg")],
             # DVD-like program stream: MPEG-2 video, AC-3 audio. dvdvideo hands ffmpeg the same streams.
-            ["-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=3", *sine,
+            ["-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=3", *sine, "-ar", "48000",
              "-c:v", "mpeg2video", "-c:a", "ac3", "-f", "vob", str(work / "title.vob")],
         ):  # fmt: skip
             result = run([*fx, *args], fixture_env)

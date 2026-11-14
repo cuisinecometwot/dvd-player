@@ -1,4 +1,4 @@
-"""Background rip jobs: ffmpeg subprocesses and raw disc-image copies, reported back on the GTK main loop."""
+"""Background rip jobs: ffmpeg subprocesses and raw disc-image copies, reported back on the UI thread."""
 
 import glob
 import logging
@@ -10,9 +10,8 @@ import threading
 import time
 from collections.abc import Callable
 
-from gi.repository import GLib
-
 from domain.rip import Pipeline, eta_text, parse_progress_line, progress_fraction
+from dvdplayer import mainthread
 from dvdplayer.proc import NO_WINDOW
 
 ProgressHandler = Callable[[float, str], None]
@@ -48,7 +47,7 @@ class RipJob:
         if force or now - self._last_report >= PROGRESS_INTERVAL_S:
             self._last_report = now
             text = f"{fraction:.0%} · {eta_text(fraction, now - self._started)}"
-            GLib.idle_add(self._on_progress, fraction, text)
+            mainthread.call(self._on_progress, fraction, text)
 
     def _finish(self, ok: bool, message: str) -> None:
         log.log(
@@ -65,7 +64,7 @@ class RipJob:
                         os.remove(path)
                     except OSError:
                         pass
-        GLib.idle_add(self._on_done, ok, message)
+        mainthread.call(self._on_done, ok, message)
 
 
 class FfmpegJob(RipJob):
@@ -88,7 +87,7 @@ class FfmpegJob(RipJob):
 
     def _run(self, steps: list[Step] | Prepare) -> None:
         if callable(steps):
-            steps = steps(lambda text: GLib.idle_add(self._on_progress, 0.0, text))
+            steps = steps(lambda text: mainthread.call(self._on_progress, 0.0, text))
             if self._cancelled.is_set():
                 self._finish(False, "Rip cancelled")
                 return

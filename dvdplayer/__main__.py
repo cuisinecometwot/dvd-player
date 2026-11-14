@@ -1,32 +1,29 @@
-"""Entry point: python -m dvdplayer [device]  (default: first drive found; /dev/sr0 on Linux, D: on Windows)"""
+"""Entry point: python -m dvdplayer [--qt | --gtk] [device]
+
+The UI is Qt on Windows and GTK/libadwaita elsewhere; --qt / --gtk pick one explicitly (for development).
+The device defaults to the first optical drive found (/dev/sr0 on Linux, D: on Windows).
+"""
 
 import sys
 
 from dvdplayer import applog, winsetup
 
-winsetup.configure()
-applog.setup("gtk")
-
-import gi  # noqa: E402
-
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw  # noqa: E402
-
-from dvdplayer.window import MainWindow  # noqa: E402
-
-APP_ID = "dev.huuduc.DvdPlayer"
-
 
 def main() -> int:
-    device = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else None
-    app = Adw.Application(application_id=APP_ID)
-    # Video apps read better dark, regardless of the system theme.
-    app.connect("startup", lambda _a: Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK))
-    app.connect("activate", lambda a: (a.get_active_window() or MainWindow(a, device)).present())
-    # Covers exits where the window's close handler never runs (e.g. quitting with a dialog open).
-    app.connect("shutdown", lambda a: [w.shutdown() for w in a.get_windows() if isinstance(w, MainWindow)])
-    return app.run([sys.argv[0]])
+    winsetup.configure()  # before anything imports vlc
+    args = sys.argv[1:]
+    ui = "qt" if sys.platform == "win32" else "gtk"
+    if "--qt" in args:
+        ui = "qt"
+    elif "--gtk" in args:
+        ui = "gtk"
+    device = next((a for a in args if not a.startswith("-")), None)
+    applog.setup(ui)
+    if ui == "qt":
+        from dvdplayer.qtui.app import run
+    else:
+        from dvdplayer.gtkui.app import run
+    return run(device)
 
 
 if __name__ == "__main__":
