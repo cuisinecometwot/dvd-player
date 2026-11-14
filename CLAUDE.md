@@ -9,7 +9,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - **Solution**: one window — drive panel + title/chapter list on the left, embedded video on the right; disc menus skipped.
 - **v1 features**: embedded playback (play/pause/seek/volume/fullscreen), title & chapter picker with real lengths,
   drive status/eject/close tray with auto-detect on insert, audio/subtitle track switching.
-- **Audio CDs**: track list in the sidebar, auto-play from track 1, auto-advance, prev/next track.
+- **Audio CDs**: track list in the sidebar, auto-play from track 1, auto-advance, prev/next track. Album/track names
+  looked up on MusicBrainz (disc ID, then the disc's barcode/MCN — most discs here have no CD-Text), editable in the
+  Rip dialog; rips go to `<Album>/NN - Title.flac` with tags (artist only in tags, by choice).
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
 - **Engagement**: utility, used whenever a disc is played. Personal, non-commercial, not distributed. English UI.
@@ -18,9 +20,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 ## Stack & architecture
 - Python 3 + GTK4/libadwaita (system PyGObject), libvlc via `python-vlc` in `.venv` (created with `--system-site-packages`).
 - Chosen over the Tauri desktop default: tiny local tool, GTK/libadwaita already installed, no build step.
-- `domain/` — pure stdlib: CD track navigation (`cd.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
+- `domain/` — pure stdlib: CD track navigation (`cd.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
   rip rules + ffmpeg command building (`rip.py`).
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/CSS check), `player.py` (libvlc),
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
 - Ripping uses system `ffmpeg` (`dvdvideo` demuxer) and `cd-paranoia` (libcdio-paranoia) for audio CDs, piped into
   ffmpeg for FLAC, one pipeline per track (the single-pass segment muxer writes wrong FLAC lengths). Not ffmpeg's
@@ -38,6 +40,6 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Run: `./run.sh` · Test: `.venv/bin/python -m pytest` · Lint: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 
 ## Progress
-- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback.
+- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
-- Next (ideas): CD track names via MusicBrainz; remember last position.
+- Next (ideas): remember last position; CD-Text as an offline source.

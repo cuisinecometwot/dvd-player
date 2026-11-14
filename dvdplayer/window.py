@@ -11,6 +11,15 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from domain.cd import track_after, track_before  # noqa: E402
+from domain.cdmeta import (  # noqa: E402
+    AlbumInfo,
+    TrackInfo,
+    album_folder_name,
+    blank_album,
+    flac_tags,
+    musicbrainz_disc_id,
+    track_file_name,
+)
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
@@ -23,6 +32,7 @@ from domain.rip import (  # noqa: E402
     safe_filename,
     unique_name,
 )
+from dvdplayer import musicbrainz  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
 from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
@@ -71,6 +81,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._audio_spans: list[tuple[int, int, int]] = []
         self._cd_mode = False
         self._cd_track: int | None = None
+        self._cd_album: AlbumInfo | None = None
+        self._cd_lookup = ""  # "pending", "found" or "missing"
+        self._cd_lookup_gen = 0  # results from an earlier disc are dropped
+        self._album_listener = None  # set while the rip dialog is open
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -294,10 +308,41 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_empty_page("No audio tracks", "The disc's table of contents couldn't be read.")
             return
         self._set_cd_mode(True)
+        self._cd_album = blank_album([s[0] for s in self._audio_spans])
+        self._start_cd_lookup(tracks, leadout)
         self._build_cd_rows()
         self._loaded = True
         self._stack.set_visible_child_name("player")
         self._play_cd_track(self._audio_spans[0][0])
+
+    def _start_cd_lookup(self, tracks, leadout: int) -> None:
+        self._cd_lookup_gen += 1
+        gen, self._cd_lookup = self._cd_lookup_gen, "pending"
+        disc_id = musicbrainz_disc_id(tracks[0].number, tracks[-1].number, leadout, [t.start_lba for t in tracks])
+        barcode, count = self._drive.mcn(), len(self._audio_spans)
+
+        def work() -> None:
+            info = musicbrainz.lookup(disc_id, barcode, count)
+            GLib.idle_add(self._on_cd_lookup_done, gen, info)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_cd_lookup_done(self, gen: int, info: AlbumInfo | None) -> bool:
+        if gen != self._cd_lookup_gen or not self._cd_mode:
+            return False
+        self._cd_lookup = "found" if info else "missing"
+        if info:
+            self._set_cd_album(info)
+        if self._album_listener:
+            self._album_listener()
+        return False
+
+    def _set_cd_album(self, info: AlbumInfo) -> None:
+        self._cd_album = info
+        for row, (number, _, _) in zip(self._title_rows, self._audio_spans, strict=False):
+            row.set_title(f"{number}. {info.track(number).title}")
+        if self._cd_track is not None:
+            self._show_cd_track(self._cd_track)
 
     def _set_cd_mode(self, on: bool) -> None:
         self._cd_mode = on
@@ -314,7 +359,8 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_cd_rows(self) -> None:
         self._clear_title_rows()
         for number, start, end in self._audio_spans:
-            row = Adw.ActionRow(title=f"Track {number}", subtitle=format_duration(end - start), activatable=True)
+            title = f"{number}. {self._cd_album.track(number).title}" if self._cd_album else f"Track {number}"
+            row = Adw.ActionRow(title=title, subtitle=format_duration(end - start), activatable=True)
             row.connect("activated", lambda _r, n=number: self._play_cd_track(n))
             marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
             marker.add_css_class("accent")
@@ -329,16 +375,21 @@ class MainWindow(Adw.ApplicationWindow):
     def _play_cd_track(self, number: int) -> None:
         self._cd_track = number
         self._player.open_cd_track(self._drive.device, number)
+        self._show_cd_track(number)
+
+    def _show_cd_track(self, number: int) -> None:
         span = self._cd_span(number)
         total = len(self._audio_spans)
-        self._cd_page.set_title(f"Track {number}")
+        found = self._cd_lookup in ("found", "edited") and self._cd_album is not None
+        track = self._cd_album.track(number) if found else TrackInfo(number, f"Track {number}")
+        album = f"{self._cd_album.title} · {track.artist or self._cd_album.artist}" if found else self._disc_label
+        self._cd_page.set_title(track.title)
         self._cd_page.set_description(
-            f"{self._disc_label} · track {number} of {total}"
-            + (f" · {format_duration(span[2] - span[1])}" if span else "")
+            f"{album} · track {number} of {total}" + (f" · {format_duration(span[2] - span[1])}" if span else "")
         )
         for n, marker in self._title_markers.items():
             marker.set_opacity(1 if n == number else 0)
-        self._window_title.set_subtitle(f"{self._disc_label} · Track {number}")
+        self._window_title.set_subtitle(f"{album} · {track.title}")
 
     def _skip_back(self) -> None:
         if not self._cd_mode:
@@ -382,6 +433,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._titles, self._disc_info = [], []
         self._last_position = None
         self._audio_spans = []
+        self._cd_album, self._cd_lookup = None, ""
+        self._cd_lookup_gen += 1
         self._rip_options = RipOptions((), "No disc")
         self._rip_btn.set_sensitive(False)
         self._clear_title_rows()
@@ -569,7 +622,8 @@ class MainWindow(Adw.ApplicationWindow):
             alert.present(self)
             return
 
-        dialog = Adw.Dialog(title="Rip to File", content_width=460)
+        audio = any(kind is RipKind.AUDIO_TRACKS for _, kind, _ in choices)
+        dialog = Adw.Dialog(title="Rip to File", content_width=460, content_height=640 if audio else -1)
         state = {"folder": None}
 
         what = Adw.ComboRow(title="What", model=Gtk.StringList.new([c[0] for c in choices]))
@@ -612,12 +666,19 @@ class MainWindow(Adw.ApplicationWindow):
         group.add(what)
         group.add(folder_row)
 
+        album_form = self._album_form() if audio else None
+        if album_form:
+            dialog.connect("closed", lambda *_: setattr(self, "_album_listener", None))
+
         start = Gtk.Button(label="Start Rip", halign=Gtk.Align.CENTER, margin_bottom=18)
         start.add_css_class("pill")
         start.add_css_class("suggested-action")
 
         def on_start(*_):
             _, kind, index = choices[what.get_selected()]
+            if album_form and kind is RipKind.AUDIO_TRACKS:
+                self._cd_lookup = "edited"
+                self._set_cd_album(album_form[1]())
             dialog.close()
             self._start_rip(kind, index, current_folder())
 
@@ -625,12 +686,83 @@ class MainWindow(Adw.ApplicationWindow):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page = Adw.PreferencesPage()
         page.add(group)
+        if album_form:
+            for extra in album_form[0]:
+                page.add(extra)
         body.append(page)
         body.append(start)
         toolbar = Adw.ToolbarView(content=body)
         toolbar.add_top_bar(Adw.HeaderBar())
         dialog.set_child(toolbar)
         dialog.present(self)
+
+    def _album_form(self):
+        """Editable album/track fields for an audio CD rip: (groups, read_values)."""
+        info = self._cd_album or blank_album([s[0] for s in self._audio_spans])
+        album_group = Adw.PreferencesGroup(title="Album")
+        album_row = Adw.EntryRow(title="Album")
+        artist_row = Adw.EntryRow(title="Artist")
+        year_row = Adw.EntryRow(title="Year", input_purpose=Gtk.InputPurpose.DIGITS)
+        for row in (album_row, artist_row, year_row):
+            album_group.add(row)
+        tracks_group = Adw.PreferencesGroup(title="Tracks")
+        track_rows = {}
+        for number, _, _ in self._audio_spans:
+            track_rows[number] = Adw.EntryRow(title=f"Track {number}")
+            tracks_group.add(track_rows[number])
+        state = {"edited": False, "filling": False}
+
+        def fill(src: AlbumInfo) -> None:
+            state["filling"] = True
+            album_row.set_text(src.title)
+            artist_row.set_text(src.artist)
+            year_row.set_text(src.year)
+            for number, row in track_rows.items():
+                row.set_text(src.track(number).title)
+            state["filling"] = False
+
+        def on_changed(*_):
+            if not state["filling"]:
+                state["edited"] = True
+
+        def show_status() -> None:
+            album_group.set_description(
+                {
+                    "pending": "Looking up the disc on MusicBrainz…",
+                    "found": "Found on MusicBrainz. Edit anything before ripping.",
+                    "edited": "Saved into the FLAC tags and file names.",
+                }.get(self._cd_lookup, "Not found online: type the details in.")
+            )
+
+        def on_lookup_done() -> None:
+            # Don't overwrite what the user already typed while the lookup was running.
+            if self._cd_lookup == "found" and not state["edited"]:
+                fill(self._cd_album)
+            show_status()
+
+        fill(info)
+        show_status()
+        for row in (album_row, artist_row, year_row, *track_rows.values()):
+            row.connect("changed", on_changed)
+        self._album_listener = on_lookup_done
+
+        def read() -> AlbumInfo:
+            current = self._cd_album or info
+            artist = artist_row.get_text().strip() or "Unknown Artist"
+            tracks = []
+            for number, row in track_rows.items():
+                old = current.track(number)
+                # Per-track artists from MusicBrainz are kept unless they just repeated the album artist.
+                track_artist = old.artist if old.artist and old.artist != current.artist else artist
+                tracks.append(TrackInfo(number, row.get_text().strip() or f"Track {number:02d}", track_artist))
+            return AlbumInfo(
+                title=album_row.get_text().strip() or "Unknown Album",
+                artist=artist,
+                year=year_row.get_text().strip(),
+                tracks=tuple(tracks),
+            )
+
+        return [album_group, tracks_group], read
 
     def _start_rip(self, kind: RipKind, title_index: int, folder: Path) -> None:
         try:
@@ -651,11 +783,16 @@ class MainWindow(Adw.ApplicationWindow):
             what, self._rip_dest = f"Ripping {title.label if title else 'title'}", Path(out)
             steps = [(dvd_title_command(device, title_index + 1, out), title.duration_ms if title else 0)]
         elif kind is RipKind.AUDIO_TRACKS:
-            album = Path(free(base))
+            info = self._cd_album or blank_album([s[0] for s in self._audio_spans])
+            album = Path(free(album_folder_name(info)))
             album.mkdir()
-            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, [str(album / "Track *.flac")])
-            what, self._rip_dest = f"Ripping {len(self._audio_spans)} tracks", album
-            steps = audio_track_commands(device, self._audio_spans, str(album / "Track {:02d}.flac"))
+            total = len(self._audio_spans)
+            outputs = {
+                n: (str(album / track_file_name(info, n)), flac_tags(info, n, total)) for n, _, _ in self._audio_spans
+            }
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, [path for path, _ in outputs.values()])
+            what, self._rip_dest = f"Ripping {total} tracks", album
+            steps = audio_track_commands(device, self._audio_spans, outputs)
         else:
             out = free(f"{base}.iso")
             job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
