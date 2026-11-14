@@ -13,6 +13,8 @@ from gi.repository import GLib
 from domain.rip import Pipeline, eta_text, parse_progress_line, progress_fraction
 
 ProgressHandler = Callable[[float, str], None]
+# Runs on the worker thread before any ffmpeg starts (e.g. network lookups); gets a status-text callback.
+Prepare = Callable[[Callable[[str], None]], list[tuple[Pipeline, int]]]
 DoneHandler = Callable[[bool, str], None]
 IMAGE_CHUNK = 2048 * 512  # 1 MiB, a whole number of DVD sectors
 PROGRESS_INTERVAL_S = 0.25
@@ -55,7 +57,7 @@ class FfmpegJob(RipJob):
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
 
-    def start(self, steps: list[tuple[Pipeline, int]]) -> None:
+    def start(self, steps: list[tuple[Pipeline, int]] | Prepare) -> None:
         """Run (pipeline, duration_ms) steps in order; progress spans all of them."""
         threading.Thread(target=self._run, args=(steps,), daemon=True).start()
 
@@ -67,7 +69,12 @@ class FfmpegJob(RipJob):
         for proc in procs:
             _stop(proc)
 
-    def _run(self, steps: list[tuple[Pipeline, int]]) -> None:
+    def _run(self, steps: list[tuple[Pipeline, int]] | Prepare) -> None:
+        if callable(steps):
+            steps = steps(lambda text: GLib.idle_add(self._on_progress, 0.0, text))
+            if self._cancelled.is_set():
+                self._finish(False, "Rip cancelled")
+                return
         total = sum(duration for _, duration in steps)
         done_before = 0
         for pipeline, duration in steps:

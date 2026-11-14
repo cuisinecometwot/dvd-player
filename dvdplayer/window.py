@@ -21,6 +21,7 @@ from domain.cdmeta import (  # noqa: E402
     track_file_name,
 )
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
+from domain.lyrics import lrc_path_for, lrc_text, lyrics_tag  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
     RipKind,
@@ -32,7 +33,7 @@ from domain.rip import (  # noqa: E402
     safe_filename,
     unique_name,
 )
-from dvdplayer import musicbrainz  # noqa: E402
+from dvdplayer import lrclib, musicbrainz  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
 from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
@@ -676,11 +677,13 @@ class MainWindow(Adw.ApplicationWindow):
 
         def on_start(*_):
             _, kind, index = choices[what.get_selected()]
+            want_lyrics = False
             if album_form and kind is RipKind.AUDIO_TRACKS:
                 self._cd_lookup = "edited"
-                self._set_cd_album(album_form[1]())
+                album, want_lyrics = album_form[1]()
+                self._set_cd_album(album)
             dialog.close()
-            self._start_rip(kind, index, current_folder())
+            self._start_rip(kind, index, current_folder(), want_lyrics)
 
         start.connect("clicked", on_start)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -705,6 +708,12 @@ class MainWindow(Adw.ApplicationWindow):
         year_row = Adw.EntryRow(title="Year", input_purpose=Gtk.InputPurpose.DIGITS)
         for row in (album_row, artist_row, year_row):
             album_group.add(row)
+        lyrics_row = Adw.SwitchRow(
+            title="Download lyrics",
+            subtitle="From LRCLIB: saved in the FLAC tags, plus a synced .lrc file when available",
+            active=True,
+        )
+        album_group.add(lyrics_row)
         tracks_group = Adw.PreferencesGroup(title="Tracks")
         track_rows = {}
         for number, _, _ in self._audio_spans:
@@ -746,7 +755,7 @@ class MainWindow(Adw.ApplicationWindow):
             row.connect("changed", on_changed)
         self._album_listener = on_lookup_done
 
-        def read() -> AlbumInfo:
+        def read() -> tuple[AlbumInfo, bool]:
             current = self._cd_album or info
             artist = artist_row.get_text().strip() or "Unknown Artist"
             tracks = []
@@ -755,16 +764,17 @@ class MainWindow(Adw.ApplicationWindow):
                 # Per-track artists from MusicBrainz are kept unless they just repeated the album artist.
                 track_artist = old.artist if old.artist and old.artist != current.artist else artist
                 tracks.append(TrackInfo(number, row.get_text().strip() or f"Track {number:02d}", track_artist))
-            return AlbumInfo(
+            album = AlbumInfo(
                 title=album_row.get_text().strip() or "Unknown Album",
                 artist=artist,
                 year=year_row.get_text().strip(),
                 tracks=tuple(tracks),
             )
+            return album, lyrics_row.get_active()
 
         return [album_group, tracks_group], read
 
-    def _start_rip(self, kind: RipKind, title_index: int, folder: Path) -> None:
+    def _start_rip(self, kind: RipKind, title_index: int, folder: Path, want_lyrics: bool = False) -> None:
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -790,9 +800,13 @@ class MainWindow(Adw.ApplicationWindow):
             outputs = {
                 n: (str(album / track_file_name(info, n)), flac_tags(info, n, total)) for n, _, _ in self._audio_spans
             }
-            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, [path for path, _ in outputs.values()])
+            flacs = [path for path, _ in outputs.values()]
+            job = FfmpegJob(self._on_rip_progress, self._on_rip_done, flacs + [lrc_path_for(p) for p in flacs])
             what, self._rip_dest = f"Ripping {total} tracks", album
-            steps = audio_track_commands(device, self._audio_spans, outputs)
+            spans = list(self._audio_spans)
+            steps = audio_track_commands(device, spans, outputs)
+            if want_lyrics:
+                steps = self._with_lyrics(device, info, spans, outputs)
         else:
             out = free(f"{base}.iso")
             job = ImageJob(self._on_rip_progress, self._on_rip_done, [out])
@@ -811,6 +825,31 @@ class MainWindow(Adw.ApplicationWindow):
             job.start(device, out, self._drive.size_bytes())
         else:
             job.start(steps)
+
+    @staticmethod
+    def _with_lyrics(device: str, info: AlbumInfo, spans, outputs):
+        """Rip preparation run on the job thread: fetch lyrics, write .lrc files, add LYRICS tags."""
+
+        def prepare(status):
+            for i, (number, start, end) in enumerate(spans, start=1):
+                status(f"fetching lyrics {i}/{len(spans)}…")
+                track = info.track(number)
+                lyrics = lrclib.fetch(track.title, track.artist or info.artist, (end - start) / 1000)
+                if lyrics is None:
+                    continue
+                path, tags = outputs[number]
+                outputs[number] = (path, [*tags, *lyrics_tag(lyrics)])
+                if lyrics.synced:
+                    try:
+                        Path(lrc_path_for(path)).write_text(
+                            lrc_text(lyrics.synced, track.title, track.artist or info.artist, info.title),
+                            encoding="utf-8",
+                        )
+                    except OSError:
+                        pass  # lyrics are a bonus; never fail the rip over them
+            return audio_track_commands(device, spans, outputs)
+
+        return prepare
 
     def _set_busy(self, busy: bool) -> None:
         for widget in (self._rip_btn, self._eject_btn, self._reload_btn, self._titles_group, self._controls):
