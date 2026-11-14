@@ -73,7 +73,9 @@ class Player:
         self._play_new_media()
 
     def _play_new_media(self) -> None:
-        self._volume_pending = self._volume != 100  # a new output starts at full volume
+        # Always push the slider's volume: WirePlumber restores the last saved volume for VLC's
+        # "Video" stream role, so a new output may start anywhere, even at 0.
+        self._volume_pending = True
         self._mp.play()
 
     def open_cd_track(self, device: str, track: int) -> None:
