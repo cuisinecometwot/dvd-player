@@ -1,7 +1,8 @@
 # DVD Player
 
 Small native GNOME app to play DVDs from the external USB drive (auto-detected `/dev/sr*`; it can come back as `sr1` after a USB replug) and manage the drive.
-Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland).
+Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland). The repo is public on GitHub,
+so others may try it; `README.md` is the user-facing guide.
 
 ## Product
 - **User**: the owner, on their own Fedora laptop with a USB DVD writer (Matshita UJ8B0AW, region set to 2).
@@ -33,7 +34,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - **DVD subtitles**: only the disc's own tracks (dropdown); nothing is fetched for DVDs.
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
-- **Engagement**: utility, used whenever a disc is played. Personal, non-commercial, not distributed. English UI.
+- **Engagement**: utility, used whenever a disc is played. Non-commercial; built for the owner first, but the repo is
+  public (github.com/cuisinecometwot/dvd-player, no license chosen yet), so features must also make sense to strangers
+  and be explained in `README.md`. English UI.
 - **UI**: libadwaita, forced dark (video app). Keys: Space, F/F11, Esc, ←/→ seek 10 s, ↑/↓ volume, L lyrics (CD).
 
 ## Stack & architecture
@@ -58,11 +61,12 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Needs `libdvdcss` (RPM Fusion tainted) for encrypted discs.
 
 ## Dev
+- Keep `README.md` in sync when user-visible features, keys, requirements or online lookups change.
 - Setup: `python3 -m venv --system-site-packages .venv && .venv/bin/pip install python-vlc pytest ruff`
 - Run: `./run.sh` · Test: `.venv/bin/python -m pytest` · Lint: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 
 ## Progress
-- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache; cover art; playing ripped albums/videos from disk.
+- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache; cover art; playing ripped albums/videos from disk; README.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
 - Next (ideas): remember last position.

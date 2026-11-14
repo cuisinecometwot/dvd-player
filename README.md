@@ -1,0 +1,112 @@
+# DVD Player
+
+A small GNOME app for playing DVDs and audio CDs from a USB or built-in drive: no fighting with disc menus,
+synced lyrics over the album cover, and one-click rips you can play again later without the disc.
+
+- **DVDs open straight into the film.** Disc menus are skipped; every title and chapter is listed in the sidebar
+  with its real length, and the main feature starts on its own.
+- **Audio CDs get names, lyrics and a cover.** Track and album names come from the disc's CD-Text or MusicBrainz,
+  the front cover from the Cover Art Archive, and synced lyrics from LRCLIB, shown large under the cover as the song
+  plays.
+- **Rip the disc.** An audio CD becomes a tagged FLAC album (with cover, lyrics and optional Opus copies for your
+  phone), a DVD title becomes an MKV with all audio and subtitle tracks, and any unprotected disc can be saved
+  as an ISO.
+- **Play your rips.** Open an album folder or an MKV and it plays just like the disc did, lyrics and chapters
+  included, fully offline.
+- **One window for the drive too.** See whether there is a disc and what it is, eject or close the tray; discs are
+  picked up automatically when inserted.
+
+## Requirements
+
+Built and tested on **Fedora (GNOME, Wayland)** with Python 3.14. Other distributions should work if they have
+the same packages.
+
+```sh
+sudo dnf install python3-gobject gtk4 libadwaita vlc ffmpeg-free libcdio libcdio-paranoia
+```
+
+- **Encrypted (CSS) DVDs**, which is most commercial films, need `libdvdcss` from
+  [RPM Fusion](https://rpmfusion.org/) to play. With RPM Fusion Free enabled, add its "tainted" repository:
+  `sudo dnf install rpmfusion-free-release-tainted && sudo dnf install libdvdcss`
+- A DVD drive. It is found automatically (`/dev/sr0`, `/dev/sr1`, …).
+
+## Install and run
+
+```sh
+git clone https://github.com/cuisinecometwot/dvd-player.git
+cd dvd-player
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install python-vlc
+./run.sh
+```
+
+`--system-site-packages` lets the virtual environment use the system's GTK bindings. To use a specific drive,
+pass it as an argument: `./run.sh /dev/sr1`.
+
+## Using it
+
+Insert a disc and playback starts. Pick another title, chapter or track in the sidebar; switch the audio
+language and subtitles with the dropdowns under the video.
+
+| Key | Action |
+|---|---|
+| Space | Play / pause |
+| ← / → | Seek 10 seconds |
+| ↑ / ↓ | Volume |
+| F, F11, double-click | Fullscreen (Esc to leave) |
+| L | Show / hide lyrics (audio CDs and albums) |
+| Ctrl+O | Open a track or video file |
+| Ctrl+Shift+O | Open an album folder |
+
+**Ripping:** press **Rip**, choose what to save and where. For audio CDs you can correct the album and track
+names, choose a cover image, and turn lyrics and Opus copies on or off before starting. Your edits are
+remembered for that disc. Playback stops while ripping, since the drive can't do both at full speed.
+
+A ripped album looks like this:
+
+```
+Album/
+  01 - Song.flac      tags, cover and plain lyrics inside
+  01 - Song.lrc       synced lyrics, for players that show them
+  cover.jpg
+Album (Opus)/         optional, ≈1.2 MB per minute
+  01 - Song.opus
+```
+
+**Playing rips:** use the folder button at the top left, the buttons on the start page, or drag a folder or file
+onto the window. Opening a single track plays its whole album from that track. If you insert a disc meanwhile,
+the file keeps playing and a **Play Disc** button appears; the reload button also switches back to the disc.
+
+## Privacy
+
+Looking up an audio CD sends only the disc ID, its barcode, the song titles, artist and track lengths to
+[MusicBrainz](https://musicbrainz.org/), [LRCLIB](https://lrclib.net/) and the
+[Cover Art Archive](https://coverartarchive.org/). Results are cached in `~/.cache/dvd-player/`, so each disc is
+looked up once. The sidebar shows what is being fetched and from where. Nothing is sent for DVDs or for files
+you open from disk.
+
+## Copy protection
+
+Ripping a copy-protected (CSS) DVD would mean bypassing that protection, which the author's local law (Japan)
+forbids even for private copies, so the app refuses and explains why. Playing those discs works with
+`libdvdcss`. Audio CDs, unprotected DVDs and data discs rip normally.
+
+## Status
+
+A personal project, used daily on one machine (Fedora, a Panasonic/Matshita USB DVD writer). Known gaps:
+
+- Ripping unprotected DVDs and reading CD-Text are implemented but haven't been tried on real discs yet.
+- Linux with GTK 4 / libadwaita only.
+
+Bug reports and pull requests are welcome.
+
+## Development
+
+```sh
+.venv/bin/pip install pytest ruff
+.venv/bin/python -m pytest
+.venv/bin/ruff check . && .venv/bin/ruff format .
+```
+
+The rules (track navigation, metadata, lyrics timing, rip commands, album folders) live in `domain/`, plain
+Python with unit tests; GTK, VLC and the drive are in `dvdplayer/`.
