@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import gi
@@ -22,6 +23,7 @@ from domain.cdcache import (  # noqa: E402
 )
 from domain.cdmeta import AlbumInfo, TrackInfo, album_folder_name  # noqa: E402
 from domain.disc import DiscKind, DriveStatus  # noqa: E402
+from domain.library import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, media_kind  # noqa: E402
 from domain.lyrics import Lyrics, line_index_at, parse_lrc  # noqa: E402
 from domain.media import Title, Track, apply_disc_info, clamp, format_duration, main_title  # noqa: E402
 from domain.rip import (  # noqa: E402
@@ -38,6 +40,7 @@ from dvdplayer import audiorip  # noqa: E402
 from dvdplayer.cdinfo import CdInfo  # noqa: E402
 from dvdplayer.drive import Drive  # noqa: E402
 from dvdplayer.images import load_texture  # noqa: E402
+from dvdplayer.localmedia import OpenedAlbum, read_album  # noqa: E402
 from dvdplayer.player import Player  # noqa: E402
 from dvdplayer.ripper import FfmpegJob, ImageJob, RipJob  # noqa: E402
 from dvdplayer.video_view import VideoView  # noqa: E402
@@ -104,6 +107,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._lyrics_lines: list[tuple[int, str]] = []
         self._lyrics_index = -2  # line currently shown; -2 forces a redraw
         self._cover_key: tuple | None = None  # (path, mtime) of the cover on screen
+        # Files from disk (e.g. earlier rips) instead of the disc; the drive keeps being watched meanwhile.
+        self._local_album: OpenedAlbum | None = None
+        self._local_video: Path | None = None
+        self._opening: Path | None = None  # album folder being read in the background
+        self._open_gen = 0
+        self._local_work_dir: Path | None = None  # embedded cover extracted from the tracks
+        self._open_dir = Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_MUSIC) or GLib.get_home_dir())
 
         self._frame_lock = threading.Lock()
         self._pending_frame = None
@@ -114,6 +124,7 @@ class MainWindow(Adw.ApplicationWindow):
             Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
         self._build_ui()
+        self._add_open_actions(app)
         self.connect("close-request", self._on_close)
         self.connect("notify::fullscreened", self._on_fullscreen_changed)
 
@@ -129,10 +140,19 @@ class MainWindow(Adw.ApplicationWindow):
 
         sidebar_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", active=True, tooltip_text="Toggle sidebar")
         header.pack_start(sidebar_btn)
+        open_menu = Gio.Menu()
+        open_menu.append("Open Album Folder…", "win.open-folder")
+        open_menu.append("Open File…", "win.open-file")
+        self._open_btn = Gtk.MenuButton(
+            icon_name="document-open-symbolic",
+            tooltip_text="Play a ripped album or video from disk",
+            menu_model=open_menu,
+        )
+        header.pack_start(self._open_btn)
         self._eject_btn = Gtk.Button(icon_name="media-eject-symbolic", tooltip_text="Eject")
         self._eject_btn.connect("clicked", self._on_eject)
         header.pack_end(self._eject_btn)
-        reload_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Reload disc")
+        reload_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Reload disc (back to the disc)")
         reload_btn.connect("clicked", lambda *_: self._reload_disc())
         header.pack_end(reload_btn)
         self._rip_btn = Gtk.Button(
@@ -157,6 +177,10 @@ class MainWindow(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
+
+        drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        drop.connect("drop", self._on_drop)
+        self.add_controller(drop)
 
     def _build_sidebar(self) -> Gtk.Widget:
         box = Gtk.Box(
@@ -227,7 +251,12 @@ class MainWindow(Adw.ApplicationWindow):
         return row
 
     def _build_content(self) -> Gtk.Widget:
-        self._empty_page = Adw.StatusPage(icon_name="media-optical-symbolic")
+        open_buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        for label, action in (("Open Album Folder…", "win.open-folder"), ("Open File…", "win.open-file")):
+            b = Gtk.Button(label=label, action_name=action)
+            b.add_css_class("pill")
+            open_buttons.append(b)
+        self._empty_page = Adw.StatusPage(icon_name="media-optical-symbolic", child=open_buttons)
         self._video = VideoView()
         click = Gtk.GestureClick()
         click.connect("pressed", self._on_video_click)
@@ -264,7 +293,7 @@ class MainWindow(Adw.ApplicationWindow):
         return box
 
     def _refresh_cover(self) -> None:
-        path = self._cd_info.cover_path if self._cd_mode else None
+        path = self._cover_path()
         try:
             key = (path, path.stat().st_mtime_ns) if path else None
         except OSError:
@@ -279,7 +308,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._cover_frame.set_ratio(big.get_width() / big.get_height())
         self._cover_frame.set_visible(big is not None)
         self._cd_icon.set_visible(big is None)
-        small = load_texture(path, 40, 40) if key else None
+        # The thumbnail belongs to the disc row, so a local album's cover stays off it.
+        small = load_texture(path, 40, 40) if key and self._local_album is None else None
         self._disc_thumb.set_paintable(small)
         self._disc_thumb.set_visible(small is not None)
 
@@ -375,13 +405,20 @@ class MainWindow(Adw.ApplicationWindow):
                 "go-up-symbolic" if status is DriveStatus.TRAY_OPEN else "media-eject-symbolic"
             )
             self._eject_btn.set_tooltip_text("Close tray" if status is DriveStatus.TRAY_OPEN else "Eject")
+            local = self._local_active()
             if status is DriveStatus.DISC_OK:
                 self._load_pending, self._mount_waits = True, 0
+                if local:
+                    toast = Adw.Toast(title="Disc inserted", button_label="Play Disc", timeout=8)
+                    toast.connect("button-clicked", lambda *_: self._reload_disc())
+                    self._toasts.add_toast(toast)
+            elif local:
+                self._load_pending = False  # a file is playing; changes in the drive don't interrupt it
             else:
                 self._unload_disc()
-            if not self._loaded:
+            if not self._loaded and not local:
                 self._show_empty_page(*EMPTY_PAGES[status])
-        if self._load_pending:
+        if self._load_pending and not self._local_active():
             self._try_load_disc()
         return True
 
@@ -437,6 +474,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_cd_info_changed(self) -> None:
         """New names or lyrics for the current disc (from cache, CD-Text, the network or the user)."""
+        if self._local_album is not None:
+            return  # a late callback from the disc that was playing before
         album = self._cd_info.album
         if album is not None and self._cd_info.named:
             for row, (number, _, _) in zip(self._title_rows, self._audio_spans, strict=False):
@@ -450,7 +489,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _refresh_online_status(self) -> None:
         info = self._cd_info
-        self._online_group.set_visible(self._cd_mode)
+        self._online_group.set_visible(self._cd_mode and self._local_album is None)
         headline, details = info.status()
         self._online_row.set_title(headline)
         self._online_row.set_subtitle(details)
@@ -474,10 +513,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_cd_rows(self) -> None:
         self._clear_title_rows()
-        for number, start, end in self._audio_spans:
-            named = self._cd_info.named and self._cd_info.album is not None
-            title = f"{number}. {self._cd_info.album.track(number).title}" if named else f"Track {number}"
-            row = Adw.ActionRow(title=title, subtitle=format_duration(end - start), activatable=True)
+        names = self._album_names()
+        for number in self._track_numbers():
+            title = f"{number}. {names.track(number).title}" if names else f"Track {number}"
+            length = self._track_length(number)
+            row = Adw.ActionRow(title=title, subtitle=format_duration(length) if length else "", activatable=True)
             row.connect("activated", lambda _r, n=number: self._play_cd_track(n))
             marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
             marker.add_css_class("accent")
@@ -486,26 +526,55 @@ class MainWindow(Adw.ApplicationWindow):
             self._titles_group.add(row)
             self._title_rows.append(row)
 
-    def _cd_span(self, number: int | None) -> tuple[int, int, int] | None:
-        return next((s for s in self._audio_spans if s[0] == number), None)
+    # Track lists come from the audio CD or from an album folder on disk; these hide which.
+
+    def _track_numbers(self) -> list[int]:
+        if self._local_album is not None:
+            return self._local_album.album.numbers
+        return [s[0] for s in self._audio_spans]
+
+    def _album_names(self) -> AlbumInfo | None:
+        """Real names, or None while the disc only has "Track N" placeholders."""
+        if self._local_album is not None:
+            return self._local_album.album.info
+        info = self._cd_info.album
+        return info if self._cd_info.named and info is not None else None
+
+    def _track_length(self, number: int | None) -> int:
+        if self._local_album is not None:
+            return self._local_album.album.durations.get(number, 0)
+        span = next((s for s in self._audio_spans if s[0] == number), None)
+        return span[2] - span[1] if span else 0
+
+    def _track_lyrics(self, number: int) -> Lyrics | None:
+        if self._local_album is not None:
+            return self._local_album.lyrics.get(number)
+        return self._cd_info.lyrics(number)
+
+    def _cover_path(self) -> Path | None:
+        if self._local_album is not None:
+            return self._local_album.cover
+        return self._cd_info.cover_path if self._cd_mode else None
 
     def _play_cd_track(self, number: int) -> None:
         self._cd_track = number
-        self._player.open_cd_track(self._drive.device, number)
+        if self._local_album is not None:
+            self._player.open(self._local_album.path(number).as_uri())
+        else:
+            self._player.open_cd_track(self._drive.device, number)
         self._show_cd_track(number)
 
     def _show_cd_track(self, number: int) -> None:
-        info = self._cd_info.album
-        found = self._cd_info.named and info is not None
-        track = info.track(number) if found else TrackInfo(number, f"Track {number}")
-        album = f"{info.title} · {track.artist or info.artist}" if found else self._disc_label
+        info = self._album_names()
+        track = info.track(number) if info else TrackInfo(number, f"Track {number}")
+        album = " · ".join(p for p in (info.title, track.artist or info.artist) if p) if info else self._disc_label
         for n, marker in self._title_markers.items():
             marker.set_opacity(1 if n == number else 0)
         self._window_title.set_subtitle(f"{album} · {track.title}")
         self._show_lyrics(number)
 
     def _show_lyrics(self, number: int) -> None:
-        lyrics: Lyrics | None = self._cd_info.lyrics(number)
+        lyrics = self._track_lyrics(number)
         self._lyrics_lines = parse_lrc(lyrics.synced) if lyrics and lyrics.synced else []
         self._lyrics_index = -2
         if self._lyrics_lines:
@@ -514,6 +583,9 @@ class MainWindow(Adw.ApplicationWindow):
         elif lyrics and lyrics.plain:
             self._plain_lyrics.set_label(lyrics.plain)
             self._lyrics_stack.set_visible_child_name("plain")
+        elif self._local_album is not None:
+            self._lyrics_note.set_label("")
+            self._lyrics_stack.set_visible_child_name("note")
         else:
             info = self._cd_info
             unsettled = info.resolving or (info.named and number not in info.known_lyrics())
@@ -539,7 +611,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not self._cd_mode:
             self._player.previous_chapter()
         elif self._cd_track is not None:
-            target = track_before([s[0] for s in self._audio_spans], self._cd_track, self._player.time_ms())
+            target = track_before(self._track_numbers(), self._cd_track, self._player.time_ms())
             if target == self._cd_track:
                 self._player.seek(0)
             else:
@@ -549,19 +621,18 @@ class MainWindow(Adw.ApplicationWindow):
         if not self._cd_mode:
             self._player.next_chapter()
         elif self._cd_track is not None:
-            target = track_after([s[0] for s in self._audio_spans], self._cd_track)
+            target = track_after(self._track_numbers(), self._cd_track)
             if target is not None:
                 self._play_cd_track(target)
 
     def _tick_cd(self) -> None:
         if self._player.is_ended() and self._cd_track is not None:
-            target = track_after([s[0] for s in self._audio_spans], self._cd_track)
+            target = track_after(self._track_numbers(), self._cd_track)
             if target is not None:
                 self._play_cd_track(target)
             else:
                 self._player.stop()  # end of disc: stay on the last track, ready to replay
-        span = self._cd_span(self._cd_track)
-        length = self._player.length_ms() or (span[2] - span[1] if span else 0)
+        length = self._player.length_ms() or self._track_length(self._cd_track)
         now = self._player.time_ms()
         self._time_label.set_label(f"{format_duration(now)} / {format_duration(length)}")
         self._seek.set_range(0, max(length, 1))
@@ -573,9 +644,13 @@ class MainWindow(Adw.ApplicationWindow):
     def _unload_disc(self) -> None:
         if self._loaded:
             self._player.stop()
-        if self._cd_mode:
-            self._set_cd_mode(False)
+        self._set_cd_mode(False)  # also resets the sidebar heading a local album or video changed
         self._loaded = self._load_pending = False
+        self._open_gen += 1  # drop an album folder still being read
+        self._local_album = self._local_video = self._opening = None
+        if self._local_work_dir is not None:
+            shutil.rmtree(self._local_work_dir, ignore_errors=True)
+            self._local_work_dir = None
         self._titles, self._disc_info = [], []
         self._last_position = None
         self._audio_spans = []
@@ -597,6 +672,137 @@ class MainWindow(Adw.ApplicationWindow):
         self._status = None
         self._poll_drive()
 
+    def _local_active(self) -> bool:
+        return self._local_album is not None or self._local_video is not None or self._opening is not None
+
+    # ---------- files from disk ----------
+
+    def _add_open_actions(self, app: Adw.Application) -> None:
+        for name, handler, accel in (
+            ("open-file", self._choose_file, "<Control>o"),
+            ("open-folder", self._choose_folder, "<Control><Shift>o"),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda *_a, h=handler: h())
+            self.add_action(action)
+            app.set_accels_for_action(f"win.{name}", [accel])
+
+    def _can_open(self) -> bool:
+        if self._rip_job is not None:
+            self._toasts.add_toast(Adw.Toast(title="Wait for the rip to finish"))
+            return False
+        return True
+
+    def _choose_file(self) -> None:
+        if not self._can_open():
+            return
+        media = Gtk.FileFilter(name="Music and videos")
+        for extension in sorted(AUDIO_EXTENSIONS | VIDEO_EXTENSIONS):
+            media.add_suffix(extension.lstrip("."))
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(media)
+
+        def chosen(dialog, result):
+            try:
+                picked = dialog.open_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            self._open_path(Path(picked.get_path()))
+
+        Gtk.FileDialog(
+            title="Open a Track or Video",
+            filters=filters,
+            default_filter=media,
+            initial_folder=Gio.File.new_for_path(str(self._open_dir)),
+        ).open(self, None, chosen)
+
+    def _choose_folder(self) -> None:
+        if not self._can_open():
+            return
+
+        def chosen(dialog, result):
+            try:
+                picked = dialog.select_folder_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            self._open_path(Path(picked.get_path()))
+
+        Gtk.FileDialog(
+            title="Open an Album Folder", initial_folder=Gio.File.new_for_path(str(self._open_dir))
+        ).select_folder(self, None, chosen)
+
+    def _on_drop(self, _target, value, _x, _y) -> bool:
+        files = value.get_files()
+        path = files[0].get_path() if files else None
+        if path is None or not self._can_open():
+            return False
+        self._open_path(Path(path))
+        return True
+
+    def _open_path(self, path: Path) -> None:
+        """A folder or an audio file opens the album (from that track); a video file plays on its own."""
+        kind = "folder" if path.is_dir() else media_kind(path.name)
+        if kind is None:
+            self._toasts.add_toast(Adw.Toast(title=f"Can't play {path.name}"))
+            return
+        if kind == "video":
+            self._open_video(path)
+        else:
+            self._open_album(path if kind == "folder" else path.parent, None if kind == "folder" else path.name)
+
+    def _leave_current(self, folder: Path) -> None:
+        self._unload_disc()
+        self._open_dir = folder.parent if folder.is_dir() and folder.parent != folder else folder
+        self._rip_btn.set_sensitive(False)  # Rip works on the disc, not on files
+        if self._status is DriveStatus.DISC_OK:
+            self._disc_row.set_subtitle("Not playing · Reload to play it")
+
+    def _open_album(self, folder: Path, start_file: str | None) -> None:
+        self._leave_current(folder)
+        self._opening = folder
+        gen = self._open_gen
+        work_dir = self._local_work_dir = Path(tempfile.mkdtemp(prefix="dvd-player-album-"))
+        self._show_empty_page(f"Opening {folder.name}…", "")
+
+        def work() -> None:
+            opened = read_album(folder, work_dir)
+            GLib.idle_add(self._album_opened, gen, folder, start_file, opened)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _album_opened(self, gen: int, folder: Path, start_file: str | None, opened: OpenedAlbum | None) -> bool:
+        if gen != self._open_gen:
+            return False
+        self._opening = None
+        if opened is None:
+            self._show_empty_page("No music here", f"{folder} has no audio files. Use Reload to go back to the disc.")
+            return False
+        self._local_album = opened
+        info = opened.album.info
+        self._disc_label = info.title
+        self._set_cd_mode(True)
+        self._titles_group.set_title(info.title)
+        self._titles_group.set_description(f"{_home_relative(folder)} · click a track to play it")
+        self._build_cd_rows()
+        self._refresh_cover()
+        self._refresh_online_status()
+        self._loaded = True
+        self._stack.set_visible_child_name("player")
+        files = opened.album.files
+        start = next((n for n, name in files.items() if name == start_file), opened.album.numbers[0])
+        self._play_cd_track(start)
+        return False
+
+    def _open_video(self, path: Path) -> None:
+        self._leave_current(path.parent)
+        self._local_video = path
+        self._disc_label = path.stem
+        self._window_title.set_subtitle(path.stem)
+        self._titles_group.set_description(f"{_home_relative(path.parent)} · click a chapter to play it")
+        self._player.open(path.as_uri())
+        self._loaded = True
+        self._stack.set_visible_child_name("player")
+
     def _show_empty_page(self, title: str, description: str) -> None:
         self._empty_page.set_title(title)
         self._empty_page.set_description(description)
@@ -616,7 +822,7 @@ class MainWindow(Adw.ApplicationWindow):
             chapters = self._player.chapters(t.index)
             parts = [format_duration(t.duration_ms) if t.duration_ms else "length unknown"]
             parts.append(f"{len(chapters)} chapters" if len(chapters) != 1 else "1 chapter")
-            if main is not None and t.index == main.index:
+            if main is not None and t.index == main.index and len(self._titles) > 1:
                 parts.append("main")
             marker = Gtk.Image(icon_name="media-playback-start-symbolic", opacity=0)
             marker.add_css_class("accent")
@@ -656,6 +862,11 @@ class MainWindow(Adw.ApplicationWindow):
             self._tick_cd()
         elif not self._titles:
             raw = self._player.titles()
+            if self._local_video is not None:
+                # One title named after the file; some formats report none, so fall back to the length.
+                length = self._player.length_ms()
+                raw = raw or ([Title(0, length)] if length else [])
+                raw = [replace(t, name=self._local_video.stem) for t in raw] if len(raw) == 1 else raw
             if raw:
                 self._titles = apply_disc_info(raw, self._disc_info)
                 self._build_title_rows()
@@ -692,7 +903,8 @@ class MainWindow(Adw.ApplicationWindow):
             for idx, marker in self._title_markers.items():
                 marker.set_opacity(1 if idx == title.index else 0)
             chapter = f" · Chapter {position[1] + 1}" if position[1] >= 0 else ""
-            self._window_title.set_subtitle(f"{self._disc_label} · {title.label}{chapter}")
+            name = title.label if self._local_video else f"{self._disc_label} · {title.label}"
+            self._window_title.set_subtitle(f"{name}{chapter}")
 
     def _set_tracks(self, audio: list[Track], subs: list[Track]) -> None:
         self._syncing_tracks = True
@@ -1044,7 +1256,9 @@ class MainWindow(Adw.ApplicationWindow):
         return str(target)
 
     def _set_busy(self, busy: bool) -> None:
-        for widget in (self._rip_btn, self._eject_btn, self._reload_btn, self._titles_group, self._controls):
+        for widget in (
+            self._rip_btn, self._eject_btn, self._reload_btn, self._open_btn, self._titles_group, self._controls,
+        ):  # fmt: skip
             widget.set_sensitive(not busy)
 
     def _on_rip_progress(self, fraction: float, text: str) -> bool:
@@ -1059,7 +1273,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._rip_work_dir = None
         self._rip_group.set_visible(False)
         self._set_busy(False)
-        self._rip_btn.set_sensitive(self._status is DriveStatus.DISC_OK and not self._load_pending)
+        self._rip_btn.set_sensitive(
+            self._status is DriveStatus.DISC_OK and not self._load_pending and not self._local_active()
+        )
         if ok and self._rip_dest is not None:
             toast = Adw.Toast(title=f"Saved {self._rip_dest.name}", button_label="Open Folder", timeout=0)
             folder = self._rip_dest if self._rip_dest.is_dir() else self._rip_dest.parent
@@ -1090,8 +1306,9 @@ class MainWindow(Adw.ApplicationWindow):
         if self._status is DriveStatus.TRAY_OPEN:
             self._drive.close_tray()
             return
-        self._unload_disc()
-        self._show_empty_page("Ejecting…", "")
+        if not self._local_active():  # a file keeps playing while the disc comes out
+            self._unload_disc()
+            self._show_empty_page("Ejecting…", "")
         self._drive.eject()
 
     def _on_video_click(self, _gesture, n_press: int, _x, _y) -> None:
@@ -1139,3 +1356,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._rip_job.cancel()
         self._loaded = False
         self._player.release()
+        if self._local_work_dir is not None:
+            shutil.rmtree(self._local_work_dir, ignore_errors=True)
+
+
+def _home_relative(path: Path) -> str:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) and path != home else str(path)

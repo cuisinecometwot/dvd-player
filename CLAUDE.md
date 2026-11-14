@@ -24,6 +24,12 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - **Online transparency**: sidebar "Album info" row — spinner + what is being fetched from where, then where each
   piece came from (or "Saved on this computer"); tooltip lists exactly what is sent. Unreachable services show
   Retry and are never cached as "not found" (`net.NetworkError` vs. a 404/None).
+- **Files on disk** (Open menu, Ctrl+O / Ctrl+Shift+O, or drag & drop): an album folder or any track in it plays on
+  the CD page (names from tags, else `NN - Title` file names; synced lyrics from the `.lrc` beside each track, plain
+  from the LYRICS tag; cover from `cover.jpg/png`, else the picture embedded in the first track, e.g. the Opus
+  copies). A video file (MKV rips) plays like a DVD title with its chapters. Nothing is fetched online for files.
+  While a file plays, the drive is still watched but a newly inserted disc only shows a "Play Disc" toast;
+  Reload goes back to the disc. Rip stays disc-only.
 - **DVD subtitles**: only the disc's own tracks (dropdown); nothing is fetched for DVDs.
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
@@ -33,9 +39,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 ## Stack & architecture
 - Python 3 + GTK4/libadwaita (system PyGObject), libvlc via `python-vlc` in `.venv` (created with `--system-site-packages`).
 - Chosen over the Tauri desktop default: tiny local tool, GTK/libadwaita already installed, no build step.
-- `domain/` — pure stdlib: CD track navigation (`cd.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), cache + cover rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
+- `domain/` — pure stdlib: CD track navigation (`cd.py`), album folders on disk (`library.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), cache + cover rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
   rip rules + ffmpeg command building (`rip.py`).
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `images.py` (scaled textures), `audiorip.py` (lyrics/tags/FLAC/Opus rip plan), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `images.py` (scaled textures), `audiorip.py` (lyrics/tags/FLAC/Opus rip plan), `localmedia.py` (album folder via ffprobe), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `video_view.py`, `window.py`.
 - Ripping uses system `ffmpeg` (`dvdvideo` demuxer) and `cd-paranoia` (libcdio-paranoia) for audio CDs, piped into
   ffmpeg for FLAC, one pipeline per track (the single-pass segment muxer writes wrong FLAC lengths). Not ffmpeg's
@@ -45,6 +51,9 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
   into a GTK4 widget on Wayland.
 - CD tracks play as `cdda://` + `:cdda-track=N`, one media per track (a bare libvlc MediaPlayer won't walk
   the CD playlist), so the app advances tracks itself when VLC reports Ended.
+- ffprobe: Ogg/Opus tags live on the audio stream, FLAC's on the container, so both are read.
+- Volume is applied only once the playback clock runs: libvlc's PipeWire output segfaults on `audio_set_volume`
+  before that (even while the state already says Playing).
 - libvlc reports 0 length for DVD titles via `dvdsimple://`, so lengths/aspect come from the IFO files instead.
 - Needs `libdvdcss` (RPM Fusion tainted) for encrypted discs.
 
@@ -53,7 +62,7 @@ Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Way
 - Run: `./run.sh` · Test: `.venv/bin/python -m pytest` · Lint: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 
 ## Progress
-- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache; cover art.
+- Done: v1 features above; domain unit tests; Rip button (DVD title/audio CD/ISO); audio CD playback; CD metadata + tagged FLAC names; LRCLIB lyrics on rip and during playback; per-disc cache; cover art; playing ripped albums/videos from disk.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
 - Next (ideas): remember last position.
