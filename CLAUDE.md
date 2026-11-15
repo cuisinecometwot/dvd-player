@@ -35,6 +35,11 @@ so others may try it; `README.md` is the user-facing guide.
   Reload goes back to the disc. Rip stays disc-only.
 - **DVD subtitles**: only the disc's own tracks (dropdown); nothing is fetched for DVDs.
 - **Ripping**: DVD title → MKV (lossless stream copy), audio CD → one FLAC per track, any unprotected disc → ISO.
+  CD rips are EAC/XLD-grade: cd-paranoia secure mode (paranoia on), drive read offset from AccurateRip's drive list
+  (page fetched once, parsed table cached as `drive-offsets.json`; Matshita = "Panasonic" there), every track
+  checked against AccurateRip (v1/v2), `<Album>.cue` (UTF-8 BOM, one FILE per track, gaps appended to the previous
+  track) + `rip.log`. Non-silent HTOA (cd-paranoia track 0) kept as `00 - Hidden track.flac`; HTOA failures never
+  fail the rip.
   CSS-protected discs are refused with an explanation: bypassing CSS is illegal in Japan even for private copies.
 - **Engagement**: utility, used whenever a disc is played. Non-commercial; built for the owner first, but the repo is
   public (github.com/cuisinecometwot/dvd-player, MIT license), so features must also make sense to strangers
@@ -50,9 +55,11 @@ so others may try it; `README.md` is the user-facing guide.
 - `dvdplayer/session.py` holds all app behaviour (drive polling, disc/CD/file lifecycle, rips, clear data) and
   calls a `View` protocol; `gtkui/` and `qtui/` only build widgets and implement View. Worker threads come back via
   `mainthread.call` (GLib.idle_add / queued Qt signal). Shared modules must not import gi or PySide6.
-- `domain/` — pure stdlib: CD track navigation (`cd.py`), album folders on disk (`library.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), cache + cover rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
+- `domain/` — pure stdlib: CD track navigation (`cd.py`), album folders on disk (`library.py`), CD metadata/disc ID/names/tags (`cdmeta.py`), lyrics matching + LRC timing (`lyrics.py`), AccurateRip IDs/checksums/offset table (`accuraterip.py`),
+  CUE sheet + rip log text (`riplog.py`), cache + cover rules (`cdcache.py`), CD-Text parsing (`cdtext.py`), IFO parsing (title lengths, aspect, region), drive status codes, durations, letterbox math,
   rip rules + ffmpeg command building (`rip.py`).
-- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `audiorip.py` (lyrics/tags/FLAC/Opus rip plan), `localmedia.py` (album folder via ffprobe), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
+- `dvdplayer/` — framework code: `drive.py` (ioctl/sysfs/lsblk/eject/TOC/MCN/CSS check), `musicbrainz.py` (urllib, 1 req/s, retries 503), `net.py` (shared GET, NetworkError vs not-found), `lrclib.py`, `coverart.py`, `accuraterip.py` (offset table + dBAR fetch), `audiorip.py` (lyrics/tags/FLAC/Opus rip plan,
+  verify/HTOA/report Python steps — `ripper.Step` may be a callable), `localmedia.py` (album folder via ffprobe), `cdinfo.py` (cache → CD-Text via `cd-info` → network, background threads), `player.py` (libvlc),
   `ripper.py` (background ffmpeg / image-copy jobs), `session.py`, `applog.py` (log file in the temp dir, purged
   after `DVD_PLAYER_LOG_DAYS`, default 1; VLC warnings via libvlc's log callback + vsnprintf), `appdata.py`
   (cache root, Clear Saved Data), `userdirs.py`, `gtkui/` (window, video_view, images), `qtui/` (window,
@@ -95,6 +102,10 @@ so others may try it; `README.md` is the user-facing guide.
 - Windows GTK build (v0.2.0-windows-experimental.2) ran fine on the owner's PC. The Qt build is untested on real
   Windows (only CI's startup test) and the refactored disc path is untested with a real disc (tray was open).
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
+- Untested on real media: secure CD rip (paranoia on, +102 offset, AccurateRip match, HTOA via track 0) — only
+  dry-run with a fake cd-paranoia; first real rip should show "All N tracks accurately ripped" for a common disc.
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
+- Japanese CD metadata (gap #4): GnuDB dropped by the owner — it requires a contactable developer email in every
+  request, which a public app would leak to every user's lookups. Later (deferred by the owner): Blu-ray, re-encoding DVD rips to H.264/H.265, real-media tests of the untested paths above.
 - Next (ideas): remember last position; verify on a Debian 13 / Ubuntu 24.04 VM; test the
   Windows build on real hardware (merged to main untested there).

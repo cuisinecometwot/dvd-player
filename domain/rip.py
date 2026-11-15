@@ -88,6 +88,7 @@ def audio_track_commands(
     outputs: dict[int, tuple[str, list[str]]],
     cover: str = "",
     reader: str = "cd-paranoia",
+    offset: int = 0,
 ) -> list[tuple[Pipeline, int]]:
     """One cd-paranoia | ffmpeg pipeline per track, so every FLAC gets a correct header.
 
@@ -96,6 +97,8 @@ def audio_track_commands(
     i.e. on every disc's last track. outputs maps track number -> (output path, extra ffmpeg args
     such as -metadata tags). cover, if given, is embedded as the FLAC front-cover picture.
     reader is libcdio's cd-paranoia or the original cdparanoia (Debian/Ubuntu); both take the same options.
+    offset is the drive's read offset in samples (AccurateRip's convention); spans are track numbers, and
+    track 0 is the hidden audio before track 1 (HTOA), which cd-paranoia reads like any other track.
     """
     picture = (
         ["-i", cover, "-map", "0:a", "-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic",
@@ -105,8 +108,8 @@ def audio_track_commands(
     return [
         (
             [
-                [reader, "--force-cdrom-device", device, "--disable-paranoia", "--quiet",
-                 "--output-wav", f"{number}-{number}", "-"],
+                [reader, "--force-cdrom-device", device, *_offset_args(offset), "--quiet",
+                 "--output-wav", str(number) if number == 0 else f"{number}-{number}", "-"],
                 [*_FFMPEG, "-f", "wav", "-i", "pipe:0", *picture, "-c:a", "flac", *outputs[number][1],
                  outputs[number][0]],
             ],
@@ -114,6 +117,17 @@ def audio_track_commands(
         )
         for number, start_ms, end_ms in spans
     ]  # fmt: skip
+
+
+def _offset_args(offset: int) -> list[str]:
+    # Full paranoia (error correction, re-reads) is cd-paranoia's default; only the offset is added.
+    return ["--sample-offset", str(offset)] if offset else []
+
+
+def pcm_command(source: str) -> list[str]:
+    """Decode a ripped track back to raw 16-bit stereo PCM on stdout, for checksums."""
+    return ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
+            "-map", "0:a", "-f", "s16le", "-acodec", "pcm_s16le", "-"]  # fmt: skip
 
 
 def through_file(pipeline: Pipeline, wav: str) -> tuple[Pipeline, Pipeline]:

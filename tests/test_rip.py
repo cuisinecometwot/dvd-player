@@ -8,6 +8,7 @@ from domain.rip import (
     eta_text,
     opus_command,
     parse_progress_line,
+    pcm_command,
     progress_fraction,
     rip_options,
     safe_filename,
@@ -116,3 +117,21 @@ def test_through_file_splits_the_pipeline_at_a_wav():
     assert len(read) == 1 and read[0][0] == "cd-paranoia" and read[0][-1] == "w/3.wav" and "3-3" in read[0]
     assert len(encode) == 1 and "pipe:0" not in encode[0]
     assert encode[0][encode[0].index("w/3.wav") - 1] == "-i" and encode[0][-1] == "03.flac"
+
+
+def test_audio_track_commands_read_securely_with_the_drive_offset():
+    [((reader, _), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])}, offset=102)
+    assert "--disable-paranoia" not in reader and "-Z" not in reader
+    assert reader[reader.index("--sample-offset") + 1] == "102"
+    [((plain, _), _)] = audio_track_commands("/dev/sr0", [(1, 0, 1000)], {1: ("01.flac", [])})
+    assert "--sample-offset" not in plain
+
+
+def test_hidden_track_is_cd_paranoia_track_zero():
+    [((reader, _), _)] = audio_track_commands("/dev/sr0", [(0, 0, 3000)], {0: ("00.flac", [])})
+    assert reader[-2] == "0"
+
+
+def test_pcm_command_decodes_audio_only_to_stdout():
+    command = pcm_command("01.flac")
+    assert command[command.index("-i") + 1] == "01.flac" and "s16le" in command and command[-1] == "-"

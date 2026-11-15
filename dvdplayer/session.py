@@ -727,11 +727,12 @@ class Session:
                 opus_dir.mkdir()
             self._rip_work_dir = Path(tempfile.mkdtemp(prefix="dvd-player-rip-"))
             cover = self._copy_cover(album_dir)
-            steps, partial = audiorip.plan(
-                device, info, list(self.audio_spans), album_dir, cover, self.cd_info.known_lyrics(),
-                want_lyrics, opus_dir, self._rip_work_dir,
+            steps, partial, summary = audiorip.plan(
+                self.drive, self._cd_toc, info, list(self.audio_spans), album_dir, cover,
+                self.cd_info.known_lyrics(), want_lyrics, opus_dir, self._rip_work_dir,
             )  # fmt: skip
             job = FfmpegJob(self._on_rip_progress, self._on_rip_done, partial)
+            job.summary = summary
             copies = " + Opus" if opus_dir else ""
             what, self._rip_dest = f"Ripping {len(self.audio_spans)} tracks{copies}", album_dir
         else:
@@ -781,7 +782,11 @@ class Session:
         )
         if ok and self._rip_dest is not None:
             folder = self._rip_dest if self._rip_dest.is_dir() else self._rip_dest.parent
-            self.view.notify(f"Saved {self._rip_dest.name}", "Open Folder", lambda: self.view.open_folder(folder), 0)
+            # Audio CD rips end with the AccurateRip verdict; other jobs just say "Rip finished".
+            detail = "" if message == "Rip finished" else f" · {message}"
+            self.view.notify(
+                f"Saved {self._rip_dest.name}{detail}", "Open Folder", lambda: self.view.open_folder(folder), 0
+            )
         else:
             self.view.notify(message, timeout_s=8)
 

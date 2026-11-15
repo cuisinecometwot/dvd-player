@@ -15,9 +15,11 @@ from dvdplayer import mainthread
 from dvdplayer.proc import NO_WINDOW
 
 ProgressHandler = Callable[[float, str], None]
+# Python work between processes (checksums, writing a log); it reports problems itself rather than failing the rip.
+Task = Callable[[], None]
 # (pipeline, duration_ms) or (pipeline, duration_ms, weight): weight scales a step's share of the progress bar
 # for steps much faster than real time (encoding a file vs. reading the disc).
-Step = tuple[Pipeline, int] | tuple[Pipeline, int, float]
+Step = tuple[Pipeline | Task, int] | tuple[Pipeline | Task, int, float]
 # Runs on the worker thread before any ffmpeg starts (e.g. network lookups); gets a status-text callback.
 Prepare = Callable[[Callable[[str], None]], list[Step]]
 DoneHandler = Callable[[bool, str], None]
@@ -72,6 +74,7 @@ class FfmpegJob(RipJob):
         super().__init__(*args, **kwargs)
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
+        self.summary: Callable[[], str] | None = None  # replaces "Rip finished" once every step succeeded
 
     def start(self, steps: list[Step] | Prepare) -> None:
         """Run (pipeline, duration_ms) steps in order; progress spans all of them."""
@@ -95,13 +98,25 @@ class FfmpegJob(RipJob):
         total = sum(duration * weight for _, duration, weight in weighted)
         done_before = 0.0
         for pipeline, duration, weight in weighted:
-            error = self._run_one(pipeline, done_before, total, weight)
+            if callable(pipeline):
+                error = "Rip cancelled" if self._cancelled.is_set() else self._run_task(pipeline)
+            else:
+                error = self._run_one(pipeline, done_before, total, weight)
             if error is not None:
                 self._finish(False, error)
                 return
             done_before += duration * weight
         self._report(1.0, force=True)
-        self._finish(True, "Rip finished")
+        self._finish(True, (self.summary() if self.summary else "") or "Rip finished")
+
+    @staticmethod
+    def _run_task(task: Task) -> str | None:
+        try:
+            task()
+        except Exception as e:  # a bug in a task must not leave the job hanging with the drive locked
+            log.exception("rip task failed")
+            return f"Rip failed: {e}"
+        return None
 
     def _run_one(self, pipeline: Pipeline, done_before: float, total: float, weight: float) -> str | None:
         procs: list[subprocess.Popen] = []
