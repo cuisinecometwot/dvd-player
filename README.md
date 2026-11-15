@@ -16,6 +16,9 @@ synced lyrics over the album cover, and one-click rips you can play again later 
 - **One window for the drive too.** See whether there is a disc and what it is, eject or close the tray; discs are
   picked up automatically when inserted.
 
+**Windows (experimental):** download the installer or portable zip from
+[Releases](https://github.com/cuisinecometwot/dvd-player/releases). On Linux, run it from source (see below).
+
 ## Requirements
 
 Built and tested on **Fedora (GNOME, Wayland)** with Python 3.14. Any Linux distribution with Python 3.12+,
