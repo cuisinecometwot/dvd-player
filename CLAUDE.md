@@ -105,7 +105,7 @@ so others may try it; `README.md` is the user-facing guide.
 - Untested on real media: secure CD rip (paranoia on, +102 offset, AccurateRip match, HTOA via track 0) — only
   dry-run with a fake cd-paranoia; first real rip should show "All N tracks accurately ripped" for a common disc.
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
-- Next: Japanese CD metadata source (gap #4, needs a product decision on which service). Later (deferred by the
-  owner): Blu-ray, re-encoding DVD rips to H.264/H.265, real-media tests of the untested paths above.
+- Japanese CD metadata (gap #4): GnuDB dropped by the owner — it requires a contactable developer email in every
+  request, which a public app would leak to every user's lookups. Later (deferred by the owner): Blu-ray, re-encoding DVD rips to H.264/H.265, real-media tests of the untested paths above.
 - Next (ideas): remember last position; verify on a Debian 13 / Ubuntu 24.04 VM; test the
   Windows build on real hardware (merged to main untested there).
