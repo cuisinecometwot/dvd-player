@@ -9,7 +9,7 @@ synced lyrics over the album cover, and one-click rips you can play again later 
   the front cover from the Cover Art Archive, and synced lyrics from LRCLIB, shown large under the cover as the song
   plays.
 - **Rip the disc.** An audio CD becomes a tagged FLAC album (with cover, lyrics and optional Opus copies for your
-  phone), a DVD title becomes an MKV with all audio and subtitle tracks, and any unprotected disc can be saved
+  phone), read in secure mode and checked against AccurateRip, with a CUE sheet and a rip log; a DVD title becomes an MKV with all audio and subtitle tracks, and any unprotected disc can be saved
   as an ISO.
 - **Play your rips.** Open an album folder or an MKV and it plays just like the disc did, lyrics and chapters
   included, fully offline.
@@ -93,6 +93,17 @@ language and subtitles with the dropdowns under the video.
 names, choose a cover image, and turn lyrics and Opus copies on or off before starting. Your edits are
 remembered for that disc. Playback stops while ripping, since the drive can't do both at full speed.
 
+Audio CDs are read the careful way, like Exact Audio Copy or XLD:
+
+- **Secure reading:** cd-paranoia's error correction re-reads anything that doesn't match, so a scratched disc
+  rips slower instead of with clicks.
+- **Read offset:** every drive reads audio a few samples early or late. The app looks up your drive's offset in
+  AccurateRip's drive list (fetched once and cached) and corrects it, so the files are sample-exact.
+- **AccurateRip:** each track's checksum is compared with other people's rips of the same CD. A match means the
+  copy is bit-perfect; the message at the end and `rip.log` say how many tracks matched.
+- **Hidden track:** audio hidden before track 1 (some singles and J-pop albums have one) is saved as
+  `00 - Hidden track.flac`; a silent gap is left out.
+
 A ripped album looks like this:
 
 ```
@@ -100,6 +111,8 @@ Album/
   01 - Song.flac      tags, cover and plain lyrics inside
   01 - Song.lrc       synced lyrics, for players that show them
   cover.jpg
+  Album.cue           the disc layout, for burning a copy or for players that use CUE sheets
+  rip.log             drive, read offset, CRC and AccurateRip result of every track
 Album (Opus)/         optional, ≈1.2 MB per minute
   01 - Song.opus
 ```
@@ -112,12 +125,14 @@ the file keeps playing and a **Play Disc** button appears; the reload button als
 
 Looking up an audio CD sends only the disc ID, its barcode, the song titles, artist and track lengths to
 [MusicBrainz](https://musicbrainz.org/), [LRCLIB](https://lrclib.net/) and the
-[Cover Art Archive](https://coverartarchive.org/). Results are cached in `~/.cache/dvd-player/`, so each disc is
+[Cover Art Archive](https://coverartarchive.org/). Ripping a CD also asks [AccurateRip](http://www.accuraterip.com/)
+for the disc's checksums (by disc ID only; nothing is uploaded) and downloads its public drive list once.
+Results are cached in `~/.cache/dvd-player/`, so each disc is
 looked up once. The sidebar shows what is being fetched and from where. Nothing is sent for DVDs or for files
 you open from disk.
 
 **Clear Saved Data…** in the main menu (☰) deletes that cache (album names including your edits, covers,
-lyrics), temporary files a crash may have left behind, and old log files. Your rips are never touched.
+lyrics, AccurateRip's drive list), temporary files a crash may have left behind, and old log files. Your rips are never touched.
 
 ## Logs
 
@@ -136,7 +151,8 @@ forbids even for private copies, so the app refuses and explains why. Playing th
 
 A personal project, used daily on one machine (Fedora, a Panasonic/Matshita USB DVD writer). Known gaps:
 
-- Ripping unprotected DVDs and reading CD-Text are implemented but haven't been tried on real discs yet.
+- Ripping unprotected DVDs and reading CD-Text are implemented but haven't been tried on real discs yet; nor have
+  the secure CD rip with offset correction, AccurateRip checks and hidden-track ripping.
 - Windows build is experimental.
 
 Bug reports and pull requests are welcome.
