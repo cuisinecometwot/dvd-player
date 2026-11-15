@@ -157,6 +157,11 @@ class Player:
     def is_ended(self) -> bool:
         return self._mp.get_state() == vlc.State.Ended
 
+    def has_stopped_early(self) -> bool:
+        """Ended or failed. Before any title shows up this means VLC couldn't open the media:
+        libvlc 3 reports an unreadable disc as Ended, not Error."""
+        return self._mp.get_state() in (vlc.State.Ended, vlc.State.Error)
+
     def stop(self) -> None:
         self._mp.stop()
 

@@ -557,6 +557,9 @@ class Session:
                 length = self.player.length_ms()
                 raw = raw or ([Title(0, length)] if length else [])
                 raw = [replace(t, name=self._local_video.stem) for t in raw] if len(raw) == 1 else raw
+            if not raw and self.player.has_stopped_early():
+                self._show_open_failed()
+                return
             if raw:
                 self._titles = apply_disc_info(raw, self._disc_info)
                 log.info("%d titles", len(self._titles))
@@ -572,6 +575,19 @@ class Session:
         self.view.show_playing(self.player.is_playing())
         if self._ticks % 4 == 0 and not self.cd_mode:
             self._set_tracks(self.player.audio_tracks(), self.player.subtitle_tracks())
+
+    def _show_open_failed(self) -> None:
+        self._loaded = False  # stops the tick; ejecting or Reload starts over
+        if self._local_video is not None:
+            log.warning("could not open %s", self._local_video)
+            self.view.show_empty("Can't play this file", f"VLC couldn't open {self._local_video.name}.")
+        else:
+            log.warning("could not read the disc")
+            self.view.show_empty(
+                "Can't read this disc",
+                "The drive couldn't read it. Check the disc is clean and seated, plug the drive straight into "
+                "the computer (USB hubs may not give it enough power), then eject and try again.",
+            )
 
     def _current_title(self) -> Title | None:
         cur = self.player.current_title()
