@@ -2,7 +2,7 @@
 
 Small native GNOME app to play DVDs from the external USB drive (auto-detected `/dev/sr*`; it can come back as `sr1` after a USB replug) and manage the drive.
 Current goal: v1 personal tool — works well on this machine (Fedora, GNOME/Wayland); Debian 13+/Ubuntu 24.04+
-supported on a best-effort basis (untested on real installs). Windows: experimental build on `feature/windows`
+supported on a best-effort basis (untested on real installs). Windows: experimental build
 (pre-release on GitHub, untested on real Windows). The repo is public on GitHub,
 so others may try it; `README.md` is the user-facing guide.
 
@@ -72,7 +72,7 @@ so others may try it; `README.md` is the user-facing guide.
 - Windows port: `drive.py` picks `drive_linux.py` (ioctl/sysfs) or `drive_windows.py` (ctypes `DeviceIoControl`
   on `\\.\D:`; struct parsing in `domain/wincd.py`); `DriveBase` holds the shared IFO code and `vlc_path`/`raw_path`.
   CD rips go through a temp WAV on Windows (cd-paranoia's stdout is text mode there). Built only in CI
-  (`.github/workflows/windows-release.yml`; tag `v*-windows*` publishes a pre-release, pushes to feature/windows
+  (`.github/workflows/windows-release.yml`; tag `v*-windows*` publishes a pre-release, pushes to main
   only build): python.org Python + PySide6 wheels + PyInstaller onedir; MSYS2 only builds a minimal FFmpeg
   (`packaging/windows/build-ffmpeg.sh`, ~10 MB, only the app's demuxers/encoders) and supplies cd-paranoia/cd-info;
   the VLC zip is trimmed (`trim-vlc.sh`, ~61 MB). CI runs `smoke_ffmpeg.py` (the app's real commands on the bundled
@@ -97,4 +97,4 @@ so others may try it; `README.md` is the user-facing guide.
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
 - Next (ideas): remember last position; verify on a Debian 13 / Ubuntu 24.04 VM; test the
-  Windows build on real hardware, then merge `feature/windows`.
+  Windows build on real hardware (merged to main untested there).

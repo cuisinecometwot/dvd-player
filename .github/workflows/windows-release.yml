@@ -1,5 +1,5 @@
 # Builds the experimental Windows version (installer + portable zip) and publishes it as a pre-release.
-# Trigger: push a tag like v0.2.0-windows-experimental.1. Pushes to feature/windows (or a manual run) build and
+# Trigger: push a tag like v0.2.0-windows-experimental.1. Pushes to main (or a manual run) build and
 # test the same way but only upload the files as a workflow artifact, without a release.
 #
 # The app runs on python.org Python with PySide6's official Qt (native Windows look, uses Windows' own ICU).
@@ -9,7 +9,7 @@ name: Windows build
 on:
   push:
     tags: ["v*-windows*"]
-    branches: ["feature/windows"]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
