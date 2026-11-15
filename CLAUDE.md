@@ -102,8 +102,8 @@ so others may try it; `README.md` is the user-facing guide.
 - Windows GTK build (v0.2.0-windows-experimental.2) ran fine on the owner's PC. The Qt build is untested on real
   Windows (only CI's startup test) and the refactored disc path is untested with a real disc (tray was open).
 - Audio CD rip verified on a real disc. Untested on real media: unprotected-DVD rips (only protected DVDs on hand; jobs verified on stand-in input).
-- Untested on real media: secure CD rip (paranoia on, +102 offset, AccurateRip match, HTOA via track 0) — only
-  dry-run with a fake cd-paranoia; first real rip should show "All N tracks accurately ripped" for a common disc.
+- Secure CD rip verified on a real disc (2026-11-15, 6-track single): +102 offset, all tracks AccurateRip v2
+  matches, last track fine, ~2.5x real time. Still untested on real media: HTOA ripping (cd-paranoia track 0).
 - Untested on real media: CD-Text parsing (no CD-Text disc on hand; parser follows libcdio's `cd-info` format).
 - Japanese CD metadata (gap #4): GnuDB dropped by the owner — it requires a contactable developer email in every
   request, which a public app would leak to every user's lookups. Later (deferred by the owner): Blu-ray, re-encoding DVD rips to H.264/H.265, real-media tests of the untested paths above.
